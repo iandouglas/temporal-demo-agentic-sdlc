@@ -32,8 +32,10 @@
 .scorecard.large .evidence { font-size: .9rem; }
 
 /* -- Run console ----------------------------------------------------------------------- */
-.run-console { min-height: 0; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); gap: .7rem; }
-.run-console > .state-banner { grid-row: auto; }
+/* A column, not fixed grid rows: any number of banners can sit above the graph, and the panels
+   below always take what is left so their own scroll areas work. */
+.run-console { min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: .7rem; }
+.run-console > * { flex-shrink: 0; }
 .run-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .run-title { display: flex; align-items: center; gap: .8rem; min-width: 0; flex: 1 1 auto; }
 .run-title .heading { font-size: 1.35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 12ch; }
@@ -79,6 +81,7 @@
 .graph-legend span { display: inline-flex; align-items: center; gap: .3rem; }
 .graph-legend .node { --status: var(--slate-300); fill: var(--status); stroke: none; }
 
+.run-console > .run-grid { flex: 1 1 0; min-height: 0; }
 .run-grid { min-height: 0; display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.25fr) minmax(0, 1.1fr); gap: .8rem; }
 .run-grid > .card { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: .6rem; padding: .9rem 1rem; }
 .timeline-card .step-label { font-size: .92rem; }
@@ -243,6 +246,7 @@
   .gh-chips { flex-wrap: wrap; }
   .run-meters { flex-wrap: wrap; gap: 1rem; }
   .run-grid { display: flex; flex-direction: column; }
+  .run-console > .run-grid { flex: none; }
   .run-grid > .card { min-height: 20rem; }
   .agent-grid, .stat-grid, .problem-grid, .change-grid, .act-result, .act-proof { grid-template-columns: minmax(0, 1fr); }
 }
