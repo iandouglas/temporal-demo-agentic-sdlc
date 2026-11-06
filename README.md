@@ -1,3 +1,6 @@
+> These updates are only for AWS re:Invent 2026. Do not merge this branch into the default branch.
+> Contact Ian Douglas or Tomas Josovsky with questions.
+
 # Agentic SDLC on Temporal
 
 Agents now write much of the code. GitHub measured that over 40% of pull requests in September 2026 started with an agent's draft, up from 17% in March.[^1] Shipping hasn't kept pace. Forrester's estimate: "Coding may improve by 30% to 40%, but if planning, testing, and release remain manual, overall team productivity often increases by less than 10%."[^2] DORA finds AI adoption raising throughput while still hurting delivery stability.[^3] And the agents that take on the rest of the lifecycle are long-running processes with the usual problems. Duolingo's team notes that "even a well prompted agent may go off the rails and crash, fail to produce any changes, hang/freeze, or otherwise fail to complete, and need to be retried."[^4]

@@ -42,7 +42,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOGS = ROOT / ".logs"
 CONTROL_PORT = 8765
-TEMPORAL = ["temporal", "--disable-config-file", "--address", "localhost:7233"]
+TEMPORAL = ["temporal", "--disable-config-file", "--address", os.environ.get("TEMPORAL_ADDRESS", "localhost:7233"), "--namespace", os.environ.get("TEMPORAL_NAMESPACE", "default")]
 WEBHOOK_EVENTS = "issues,issue_comment,pull_request,pull_request_review,pull_request_review_comment"
 SEARCH_ATTRIBUTE = ["--name", "AgenticSdlcGitHubRefs", "--type", "KeywordList"]
 
@@ -69,7 +69,7 @@ def gh_login() -> str:
 
 def this_copy() -> dict[str, str]:
     """Task queue, owner label and a webhook secret for this laptop's copy of the demo."""
-    name = f"local-{gh_login()}"
+    name = os.environ.get("TEMPORAL_TASK_QUEUE") or f"local-{gh_login()}"
     return {
         "TEMPORAL_TASK_QUEUE": name,
         "OWNER_LABEL": f"agentic-sdlc:{name}",
@@ -179,6 +179,8 @@ def main() -> None:
     # The webhook finds the runs watching an issue or PR by this search attribute.
     exists = subprocess.run([*TEMPORAL, "operator", "search-attribute", "list"], capture_output=True, text=True).stdout
     if "AgenticSdlcGitHubRefs" not in exists:
+        if os.environ.get("TEMPORAL_API_KEY"):
+            sys.exit("Cloud Namespace needs the AgenticSdlcGitHubRefs KeywordList search attribute; ask its administrator to add it.")
         subprocess.run([*TEMPORAL, "operator", "search-attribute", "create", *SEARCH_ATTRIBUTE], check=True, capture_output=True)
 
     copy_env.update(this_copy())

@@ -388,3 +388,11 @@ Local troubleshooting:
 - `uv run pytest` runs the Workflow tests with fake agents and the webhook routing tests in about 90 seconds.
 - `uv run python scripts/drive_run.py dependency` (or `review`, `issue`) runs a scenario from the terminal, answering on GitHub with `gh`, and prints each step. `scripts/drive_conversation.py` rehearses every steering beat of the issue flow.
 - Logs for every process are in `.logs/`.
+
+## re:Invent 2026 Booth Setup
+
+These updates are only for AWS re:Invent 2026. Do not merge this branch into the default branch. Contact Ian Douglas or Tomas Josovsky with questions.
+
+The laptop bundle uses this demo's source instructions with a separate UI port and a laptop-specific task queue. From the parent `new-demos/` folder, run `./bundle-setup.sh --only agentic-sdlc` and `python3 bundle.py panel`, then start **Agentic SDLC (tentative)** in [Config](http://127.0.0.1:5199/config). UI: [localhost:5370](http://127.0.0.1:5370/).
+
+Use the shared `.env` from 1Password at the bundle root. Keep machine identity in `.env.local`. The panel keeps local Temporal running in Cloud mode and restarts this demo's owned processes when switching targets. See the [bundle runbook](../RUNBOOK.md) for Cloud prerequisites, offline limits and verification. Runtime is not verified by installation alone.

@@ -32,7 +32,9 @@ async def connect(*, tools=()) -> Client:
 
         offload = await s3_payload_storage(bucket=bucket)
 
-    connect_config = ClientConfig.load_client_connect_config(disable_file=True)
+    connect_config = ClientConfig.load_client_connect_config(
+        disable_file=True, override_env_vars={k: v for k, v in os.environ.items() if v}
+    )
     connect_config.setdefault("target_host", "localhost:7233")
     connect_config.setdefault("namespace", "default")
     return await Client.connect(
