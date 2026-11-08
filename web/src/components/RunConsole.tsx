@@ -256,8 +256,10 @@ function GateCard({ view, now }: { view: RunView; now: number }) {
   const waited = now - gate.waiting_since;
   const number = gate.github_url?.split("/").pop();
   const where = gate.github_url ? `${WHERE[gate.key] ?? "issue"} #${number}` : "GitHub";
-  // Production and budget decisions take a command; at other gates any comment is conversation.
-  const conversational = gate.key !== "production" && gate.key !== "budget";
+  // Budget decisions take a command; at other gates any comment is conversation. Plan, merge (when
+  // supervised) and production are approved by a reviewer on GitHub instead.
+  const approval = gate.approval_ask !== null;
+  const conversational = gate.key !== "budget";
 
   return (
     <div className="gate" data-status="waiting">
@@ -265,14 +267,21 @@ function GateCard({ view, now }: { view: RunView; now: number }) {
       <h3 className="gate-question">{gate.question}</h3>
       {gate.key === "clarify" && <ol className="questions">{gate.questions.map((q) => <li key={q}>{q}</li>)}</ol>}
       {gate.closes_at && gate.key === "merge" && <ReviewWindow closesAt={gate.closes_at} opened={gate.waiting_since} now={now} />}
+      {approval && (
+        <p className="gate-reply">
+          A reviewer approves this in GitHub: <a className="gh-chip" href={gate.github_url ?? "#"} target="_blank"
+            rel="noreferrer">the waiting release run ↗</a>, <em>Review deployments</em>. Only the Environment's
+          reviewers can; typed commands are ignored.
+        </p>
+      )}
       <p className="gate-reply">
         {gate.commands.length > 0 ? "Reply " : "Comment "}
         {gate.commands.map((c, i) => <span key={c}>{i > 0 && " or "}<code>{c}</code></span>)}
         {gate.commands.length > 0 && conversational && ", or comment,"}
         {" on "}
-        {gate.github_url
+        {gate.github_url && !approval
           ? <a className="gh-chip" href={gate.github_url} target="_blank" rel="noreferrer">{where} ↗</a>
-          : <span className="mono">{where}</span>}
+          : <span className="mono">{approval ? `the ${WHERE[gate.key] ?? "issue"}` : where}</span>}
       </p>
       <p className="gate-explain">
         The Workflow is parked on a durable wait. No process is holding it open: it costs nothing, survives

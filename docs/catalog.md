@@ -68,7 +68,7 @@ it passes `scripts/validate_projects.py` in the registry and is not committed th
       throwaway HOME and a timeout, not in the platform's `isolatedExecutor`. Moving `run_tests` and
       `run_command` to an executor is the next hardening step.
     - Agents' tool calls are always auto-approved: there's no way to approve a shell command from
-      GitHub. The supervised setting now only means the issue's PR waits for `/merge`.
+      GitHub. The supervised setting now only means the issue's PR waits for a reviewer to approve the merge on GitHub.
     - Rolling out v2 in the shared demo changes the version for every session's new runs (one Worker
       Deployment per copy). The console asks for confirmation and says so; a crashable workspace
       keeps it private.

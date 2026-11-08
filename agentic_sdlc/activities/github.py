@@ -128,6 +128,23 @@ class HumanComment(BaseModel):
     created_at: str
 
 
+class ReleaseInput(BaseModel):
+    """Ask GitHub for a person's approval: dispatch the storefront's release workflow, whose job for
+    this gate waits on an Environment with required reviewers."""
+
+    repo: str
+    gate: Literal["plan", "merge", "production"]
+    subject: str  # the run's issue or PR, as "issue:12": how the answer finds the run
+    ask: int
+    ref: str  # the branch the workflow runs on; its checks appear on that branch's head commit
+    title: str = ""
+
+
+class PermissionInput(BaseModel):
+    repo: str
+    login: str
+
+
 class ClosePrInput(BaseModel):
     repo: str
     pr_number: int
@@ -211,6 +228,17 @@ class ScenarioStarted(BaseModel):
 
 # The required check the agent sets on pull requests; a ruleset on main requires it.
 STATUS_CONTEXT = "agentic-sdlc/agent-review"
+RELEASE_WORKFLOW = "release.yml"
+# What GitHub calls the people who can steer the agents: write access or more. "triage" and "read"
+# can comment on a public repo, and their comments go nowhere.
+TRUSTED_ROLES = {"write", "maintain", "admin"}
+# author_association values that can't have write access; the webhook drops them before a Signal.
+UNTRUSTED_ASSOCIATIONS = {"NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "CONTRIBUTOR", "MANNEQUIN"}
+
+
+def release_title(gate: str, subject: str, ask: int) -> str:
+    """The release run's name. The webhook reads it back to find which run an approval is for."""
+    return f"release {gate} {subject} #{ask}"
 BUMP_WORKFLOW = "dependency-bump.yml"
 BUMP_PACKAGE, BUMP_TO = "orbit-money", "2.0.0"
 BUMP_BRANCH_WAIT_SECONDS = 120  # the Action usually pushes its branch within 30 seconds
@@ -228,6 +256,7 @@ class GitHubActivities:
             self.revert_merge, self.cleanup_runs, self.fetch_comments, self.close_pull_request,
             self.get_pull_request, self.set_commit_status, self.update_pull_request,
             self.open_issue_for_copy, self.dispatch_bump, self.open_sample_pr, self.branch_head,
+            self.request_release, self.check_permission,
         ]
 
     @activity.defn
@@ -386,6 +415,36 @@ class GitHubActivities:
                     found.append(_human({**r, "created_at": r["submitted_at"]}, input.pull, "review"))
         people = [c for c in found if c is not None and c.body.strip() and c.created_at > input.since]
         return sorted(people, key=lambda c: c.created_at)
+
+    @activity.defn
+    async def request_release(self, input: ReleaseInput) -> None:
+        """Start a release workflow run for this gate. Its job waits for a reviewer to approve the
+        deployment in GitHub's UI, which is where the permission to promote lives. An earlier
+        request for the same gate and run is cancelled first, since its answer no longer counts;
+        a retry of this Activity finds its own run already there and dispatches nothing."""
+        title = release_title(input.gate, input.subject, input.ask)
+        prefix = release_title(input.gate, input.subject, 0).removesuffix("0")
+        runs = (await self._get(f"/repos/{input.repo}/actions/workflows/{RELEASE_WORKFLOW}/runs"
+                                f"?event=workflow_dispatch&per_page=50"))["workflow_runs"]
+        open_runs = [r for r in runs if r["status"] != "completed" and (r.get("display_title") or "").startswith(prefix)]
+        if any(r["display_title"] == title for r in open_runs):
+            return
+        for stale in open_runs:
+            await self._request("POST", f"/repos/{input.repo}/actions/runs/{stale['id']}/cancel", allow={202, 409})
+        await self._request("POST", f"/repos/{input.repo}/actions/workflows/{RELEASE_WORKFLOW}/dispatches", {
+            "ref": input.ref, "inputs": {"gate": input.gate, "subject": input.subject, "ask": str(input.ask),
+                                          "summary": input.title[:200]}}, allow={204})
+
+    @activity.defn
+    async def check_permission(self, input: PermissionInput) -> bool:
+        """Whether this person has write access to the repo: the people whose comments the agents
+        act on. Anyone else can comment on the issue or PR, but nothing reaches an agent."""
+        response = await self._request("GET", f"/repos/{input.repo}/collaborators/{input.login}/permission",
+                                       allow={404})
+        if response.status_code == 404:
+            return False
+        body = response.json()
+        return (body.get("role_name") or body.get("permission")) in TRUSTED_ROLES
 
     @activity.defn
     async def close_pull_request(self, input: ClosePrInput) -> None:
@@ -564,6 +623,8 @@ def _human(raw: dict, number: int, kind: str, *, file: str | None = None) -> Hum
         return None
     if file:
         body = f"(on {file}) {body}"
+    if raw.get("author_association") in UNTRUSTED_ASSOCIATIONS:
+        return None
     return HumanComment(id=f"{kind}:{raw['id']}", number=number, author=(raw.get("user") or {}).get("login", "someone"),
                         body=body[:4000], url=raw.get("html_url", ""), created_at=raw.get("created_at", ""))
 

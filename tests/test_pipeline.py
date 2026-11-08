@@ -39,14 +39,16 @@ from agentic_sdlc.activities.github import (
     PullRequest,
     PullRequestInfo,
     PullRequestInput,
+    PermissionInput,
     PullRequestRef,
+    ReleaseInput,
     RevertInput,
     ReviewInput,
     RunRepo,
     StatusInput,
     UpdatePrInput,
 )
-from agentic_sdlc.models import Plan, RunKind, RunRequest, RunState, Subtask, Usage, Workspace
+from agentic_sdlc.models import Plan, ReleaseDecision, RunKind, RunRequest, RunState, Subtask, Usage, Workspace
 from agentic_sdlc.pipeline.base import GITHUB_REFS
 from agentic_sdlc.pipeline.dependency import DependencyRepair
 from agentic_sdlc.pipeline.environments import EnvState
@@ -86,6 +88,9 @@ class World:
         self.checks: list[str] = []  # the agent's commit status, in order
         self.pr_body = ""
         self.reverts: list[RevertInput] = []
+        self.releases: list[ReleaseInput] = []  # approvals the run asked GitHub's reviewers for
+        self.no_write_access: set[str] = set()  # logins GitHub says can't write to the repo
+        self.permission_checks: list[str] = []
 
     def activities(self):
         world = self
@@ -169,6 +174,15 @@ class World:
             world.calls["branch_head"] += 1
             return f"adjusted{world.calls['branch_head']}"
 
+        @activity.defn(name="request_release")
+        async def request_release(input: ReleaseInput) -> None:
+            world.releases.append(input)
+
+        @activity.defn(name="check_permission")
+        async def check_permission(input: PermissionInput) -> bool:
+            world.permission_checks.append(input.login)
+            return input.login not in world.no_write_access
+
         @activity.defn(name="run_agent_turn")
         async def run_agent_turn(turn: AgentTurn) -> AgentTurnResult:
             role = turn.workflow_id.rsplit(".", 1)[-1]
@@ -217,7 +231,8 @@ class World:
 
         return [prepare_run, create_branches, comment_on_issue, merge_branches, open_pull_request, get_pull_request,
                 set_commit_status, update_pull_request, close_pull_request, fetch_comments, get_diff, post_review,
-                merge_pull_request, revert_merge, branch_head, run_agent_turn, run_branch_tests, apply_deployment, check_environment]
+                merge_pull_request, revert_merge, branch_head, run_agent_turn, run_branch_tests, apply_deployment, check_environment,
+                request_release, check_permission]
 
 
 class _FakeAgentBase:
@@ -284,6 +299,15 @@ class Person:
             url=f"https://x/c/{self.said}", created_at="2099-01-01T00:00:00Z"))
 
 
+    async def decide(self, gate: str, ask: int, text: str) -> None:
+        """What a reviewer does in GitHub's Review deployments dialog: approve, or reject with a
+        note. The webhook delivers it to the run as a Signal."""
+        rejected = text.startswith("/stop")
+        await self.handle.signal("release_decision", ReleaseDecision(
+            gate=gate, ask=ask, approved=not rejected, reviewer="maya",
+            comment=text.removeprefix("/stop").strip() if rejected else ""))
+
+
 async def run_scenario(client: Client, world: World, *, kind: RunKind = "issue", policy=default_policy,
                        autonomy="auto", budget=5.0, steer: str | None = None, pr_number: int | None = None,
                        idle_close_hours: float = 24.0, close_pr_when_quiet: bool = True) -> RunState:
@@ -323,10 +347,14 @@ async def _act(handle: WorkflowHandle, person: Person, policy, steer: str | None
         seen.add((gate.key, gate.waiting_since))
         occurrences[gate.key] += 1
         text = policy(gate.key, occurrences[gate.key])
-        number = int(gate.github_url.rsplit("/", 1)[-1]) if gate.github_url else None
+        last = gate.github_url.rsplit("/", 1)[-1] if gate.github_url else ""
+        number = int(last) if last.isdigit() else None  # an approval gate links to Actions, not an issue
         if text is not None:
             for comment in [text] if isinstance(text, str) else text:
-                await person.comment(comment, number)
+                if gate.approval_ask is not None and comment.startswith(("/approve", "/ship", "/merge", "/stop")):
+                    await person.decide(gate.key, gate.approval_ask, comment)  # an approval on GitHub
+                else:
+                    await person.comment(comment, number)
         elif gate.key == "conversation" and close_pr_when_quiet:
             await handle.signal("pull_request_closed", number)
 
@@ -362,10 +390,14 @@ async def test_happy_path_ships_through_approve_and_ship_on_github(env):
     assert gates == ["plan", "merge", "production"]
     assert step(state, "gate:clarify").status == "skipped"  # no questions
     assert "Nobody commented" in step(state, "gate:merge").note  # the review window closed by itself
-    assert "/approve" in step(state, "gate:plan").note and "/ship" in step(state, "gate:production").note
+    assert "Approved by @maya on GitHub" in step(state, "gate:plan").note
+    assert "Approved by @maya on GitHub" in step(state, "gate:production").note
+    # Each promotion was a request to GitHub's reviewers, not a comment to type.
+    assert [(r.gate, r.subject, r.ask) for r in world.releases] == [("plan", "issue:1", 1), ("production", "issue:1", 1)]
+    assert world.releases[0].ref == "runs/x/main"
     assert world.checks == ["pending", "success"]  # the agent's required check on the PR
-    assert any("Reply `/approve`" in body for n, body in world.posts if n == ISSUE)
-    assert [c.kind for c in state.conversation] == ["command", "command"]
+    assert any("approves the plan on GitHub" in body for n, body in world.posts if n == ISSUE)
+    assert state.conversation == []  # nobody commented: both decisions were approvals on GitHub
     # Every comment says who wrote it: the planner its plan, the pipeline its gates.
     assert next(agent for agent, body in world.authors if "### 🗺️ Plan" in body) == "Planner agent"
     assert next(agent for agent, body in world.authors if "Staging passed" in body) == "Pipeline"
@@ -440,24 +472,24 @@ async def test_supervised_autonomy_waits_for_merge_on_the_pr(env):
     def policy(gate, n):
         return "/merge" if gate == "merge" else default_policy(gate, n)
 
-    state = await run_scenario(env.client, World(), policy=gate_log(gates, policy), autonomy="supervised")
+    world = World()
+    state = await run_scenario(env.client, world, policy=gate_log(gates, policy), autonomy="supervised")
     assert gates == ["plan", "merge", "production"]
-    assert "/merge" in step(state, "gate:merge").note
+    assert "Approved by @maya on GitHub" in step(state, "gate:merge").note
+    assert ("merge", "pr:2") in [(r.gate, r.subject) for r in world.releases]
 
 
 async def test_a_command_the_gate_isnt_waiting_for_is_noted_not_obeyed(env):
-    world = World()
+    world = World(turn_cost=0.6)
 
     def policy(gate, n):
-        if gate == "plan":
-            return ["/ship", "/approve"]
+        if gate == "budget":
+            return ["/ship", "/continue"]
         return default_policy(gate, n)
 
-    gates: list[str] = []
-    state = await run_scenario(env.client, world, policy=gate_log(gates, policy))
-    noted = state.conversation[0]
-    assert (noted.kind, noted.outcome) == ("noted", "Noted; the run is waiting for /approve")
-    assert world.handlers.count("planner:plan") == 1  # still the same plan; /approve came later
+    state = await run_scenario(env.client, world, policy=policy, budget=1.0)
+    noted = next(c for c in state.conversation if c.text == "/ship")
+    assert (noted.kind, noted.outcome) == ("noted", "Noted; the run is waiting for /continue or /stop")
     assert state.status == "completed"
 
 
@@ -730,3 +762,73 @@ async def test_overlapping_canaries_promote_their_own_commits(env):
         state = await handle.execute_update(Environments.deploy, DeployRequest(action="rollback", sha="aaa", run_id="r1"))
         assert state.stable_sha == "bbb"
         await handle.terminate()
+
+
+# -- Who the agents listen to, and where promotions are decided --------------------------------
+
+
+async def test_comments_from_people_without_write_access_never_reach_an_agent(env):
+    world = World()
+    world.no_write_access = {"maya"}
+
+    def policy(gate, n):
+        if gate == "plan" and n == 1:
+            return ["Make it three subtasks instead", "/approve"]
+        return default_policy(gate, n)
+
+    state = await run_scenario(env.client, world, policy=policy)
+    assert state.status == "completed"
+    assert world.permission_checks == ["maya"]  # asked once, then remembered
+    assert world.handlers.count("planner:plan") == 1  # never revised: the comment wasn't heard
+    ignored = next(c for c in state.conversation if c.text.startswith("Make it three"))
+    assert ignored.kind == "noted" and "doesn't have write access" in ignored.outcome
+
+
+async def test_a_typed_ship_does_not_promote_to_production(env):
+    world = World()
+    gates: list[str] = []
+
+    class Typist:
+        """Types /ship on the issue instead of approving on GitHub, then does the real thing."""
+
+    def policy(gate, n):
+        return default_policy(gate, n)
+
+    task_queue = f"test-{uuid.uuid4().hex[:6]}"
+    async with Worker(env.client, task_queue=task_queue, workflows=[*RUNS.values(), *FAKE_AGENTS],
+                      activities=world.activities(), workflow_runner=workflow_runner()):
+        handle = await env.client.start_workflow(
+            IssueToProduction.run,
+            RunRequest(run_id="issue-1", kind="issue", repo="o/r", title="Discount", body="ORBIT10", issue_number=ISSUE,
+                       budget_usd=5.0, canary_bake_seconds=2, canary_check_seconds=1, review_window_seconds=2),
+            id=f"{task_queue}.gh.issue-1", task_queue=task_queue)
+        person = Person(handle, ISSUE)
+        # Approve the plan the way a reviewer does, then try to ship by typing.
+        for _ in range(300):
+            await asyncio.sleep(0.2)
+            state = await handle.query("state", result_type=RunState)
+            if state.gate and state.gate.key == "plan":
+                await person.decide("plan", state.gate.approval_ask, "/approve")
+            if state.gate and state.gate.key == "production":
+                await person.comment("/ship")
+                await asyncio.sleep(1)
+                assert (await handle.query("state", result_type=RunState)).gate.key == "production"
+                await person.decide("production", state.gate.approval_ask, "/approve")
+                break
+        state = await asyncio.wait_for(handle.result(), timeout=60)
+    assert state.status == "completed"
+    typed = next(c for c in state.conversation if c.text == "/ship")
+    assert typed.kind == "noted" and "approval on GitHub" in typed.outcome
+
+
+async def test_an_answer_to_an_old_approval_request_is_ignored(env):
+    world = World()
+
+    def policy(gate, n):
+        if gate == "production" and n == 1:
+            return "The discount banner is too small"  # an adjustment: staging redeploys, a new request goes out
+        return default_policy(gate, n)
+
+    state = await run_scenario(env.client, world, policy=policy)
+    assert state.status == "completed"
+    assert [(r.gate, r.ask) for r in world.releases if r.gate == "production"] == [("production", 1), ("production", 2)]

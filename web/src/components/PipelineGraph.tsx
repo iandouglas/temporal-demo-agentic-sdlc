@@ -18,9 +18,9 @@ const KIND: Record<string, Kind> = {
 };
 
 const SHORT: Record<string, string> = {
-  issue: "Issue", clarify: "Questions", "gate:clarify": "Answer", plan: "Plan", "gate:plan": "/approve", feedback: "Fix", build: "Fork", pr: "Pull request",
+  issue: "Issue", clarify: "Questions", "gate:clarify": "Answer", plan: "Plan", "gate:plan": "Approve", feedback: "Fix", build: "Fork", pr: "Pull request",
   review: "Review", security: "Security", "gate:merge": "Comments", merge: "Merge", staging: "Staging",
-  "gate:production": "/ship", adjust: "Adjust", canary: "Canary", rollback: "Roll back", "gate:budget": "Budget", done: "Report",
+  "gate:production": "Approve", adjust: "Adjust", canary: "Canary", rollback: "Roll back", "gate:budget": "Budget", done: "Report",
   tests: "Tests", diagnose: "Diagnose", fix: "Fix", explain: "Explain", "gate:conversation": "Comments",
 };
 

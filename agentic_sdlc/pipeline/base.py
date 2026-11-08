@@ -3,8 +3,11 @@
 A run is a Workflow that starts agents as child Workflows, sends them turns, keeps a budget,
 publishes its progress for the console, and talks with people on GitHub. People only ever talk
 to it on GitHub: comments reach the run as a ``github_comment`` Signal from the webhook, a
-comment that starts with a command (``/approve``, ``/ship``) decides a gate, and any other
-comment is conversation the agents act on. Nothing polls GitHub; a run waiting for people costs
+comment that starts with a command (``/skip``, ``/continue``) decides a gate, and any other
+comment is conversation the agents act on. Only people with write access to the repo are heard:
+anyone else's comment is recorded and ignored. Promotions (the plan, the merge, production) are
+decided on GitHub too, but by a reviewer approving a deployment: the run asks for one with
+``_request_release`` and a ``release_decision`` Signal from the webhook answers it. Nothing polls GitHub; a run waiting for people costs
 nothing until someone says something.
 
 IssueToProduction, DependencyRepair and PullRequestReview subclass this and keep only their own
@@ -21,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.common import RetryPolicy, SearchAttributeKey
-from temporalio.exceptions import ApplicationError
+from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from temporal_agent_harness.harness.agent_protocol import AgentConfig
@@ -39,7 +42,9 @@ with workflow.unsafe.imports_passed_through():
         DiffInput,
         GitHubActivities,
         HumanComment,
+        PermissionInput,
         PullRequestInfo,
+        ReleaseInput,
         ReviewInput,
         StatusInput,
     )
@@ -54,6 +59,7 @@ with workflow.unsafe.imports_passed_through():
         ModelChoice,
         Plan,
         Proof,
+        ReleaseDecision,
         ReviewReply,
         ReviewRequest,
         RunRequest,
@@ -95,6 +101,7 @@ class Outcome:
 
     command: Command | None = None
     comments: list[Feedback] = field(default_factory=list)
+    decision: ReleaseDecision | None = None  # a reviewer's answer on GitHub
     timed_out: bool = False
     closed: bool = False  # the PR was closed while waiting
 
@@ -111,6 +118,9 @@ class AgentRun:
         self._inbox: list[Feedback] = []  # comments not yet handed to an agent
         self._steers: dict[str, list[Feedback]] = {}  # per coder lane, waiting for its turn to end
         self._seen: set[str] = set()
+        self._trusted: dict[str, bool] = {}  # login -> has write access, as far as this run has checked
+        self._decisions: list[ReleaseDecision] = []  # approvals and rejections from GitHub, not yet used
+        self._asks: dict[str, int] = {}  # per gate, how many approvals the run has asked for
         self._closed_prs: set[int] = set()
         self._refs: list[str] = []
         # Parallel coders can reach the budget at the same moment; one gate, one answer.
@@ -146,15 +156,47 @@ class AgentRun:
         self._publish()
 
     @workflow.signal
-    def github_comment(self, comment: HumanComment) -> None:
+    async def github_comment(self, comment: HumanComment) -> None:
         """A person commented on this run's issue or PR (delivered by the webhook)."""
-        self._receive(comment)
+        await self._receive(comment)
+
+    @workflow.signal
+    def release_decision(self, decision: ReleaseDecision) -> None:
+        """A reviewer approved or rejected a deployment this run asked for (delivered by the webhook)."""
+        self._decisions.append(decision)
+
+    async def _request_release(self, gate: str, subject: str, ref: str) -> int:
+        """Ask GitHub for a person's approval of this gate. The release workflow's job waits on an
+        Environment with required reviewers, so who may promote is decided by GitHub. Returns the
+        request's number; the gate waits for the decision carrying it."""
+        ask = self._asks[gate] = self._asks.get(gate, 0) + 1
+        await workflow.execute_activity_method(GitHubActivities.request_release, ReleaseInput(
+            repo=self._request.repo, gate=gate, subject=subject, ask=ask, ref=ref, title=self._request.title),  # type: ignore[arg-type]
+            **GITHUB)
+        return ask
+
+    def _take_decision(self, gate: str, ask: int) -> ReleaseDecision | None:
+        """The answer to this request, if it has come. Answers to earlier requests are dropped."""
+        mine = next((d for d in self._decisions if d.gate == gate and d.ask == ask), None)
+        self._decisions = [d for d in self._decisions if d.gate != gate or d.ask > ask]
+        return mine
+
+    async def _authorized(self, login: str) -> bool:
+        """Only people with write access to the repo can steer the agents. Fails closed: if GitHub
+        can't say, the comment isn't acted on."""
+        if login not in self._trusted:
+            try:
+                self._trusted[login] = await workflow.execute_activity_method(
+                    GitHubActivities.check_permission, PermissionInput(repo=self._request.repo, login=login), **GITHUB)
+            except ActivityError:
+                return False
+        return self._trusted[login]
 
     @workflow.signal
     def pull_request_closed(self, number: int) -> None:
         self._closed_prs.add(number)
 
-    def _receive(self, comment: HumanComment) -> None:
+    async def _receive(self, comment: HumanComment) -> None:
         if comment.id in self._seen:
             return  # the webhook and a catch-up read can both deliver the same comment
         self._seen.add(comment.id)
@@ -162,6 +204,12 @@ class AgentRun:
         item = Feedback(id=comment.id, author=comment.author, text=comment.body.strip()[:4000], url=comment.url,
                         at=workflow.now().timestamp(), stage=stage)
         self._state.conversation.append(item)
+        if not await self._authorized(comment.author):
+            # Recorded for the console, never shown to an agent and never able to decide a gate.
+            item.kind, item.status = "noted", "addressed"
+            item.outcome = f"Ignored: @{comment.author} doesn't have write access to the repo"
+            self._publish()
+            return
         lanes = [s.key for s in self._state.steps if s.lane and s.status in ("active", "retrying")]
         if self._state.gate is None and lanes and not _command(item.text):
             # Coders are working and nobody's waiting at a gate: the comment steers every active
@@ -176,16 +224,19 @@ class AgentRun:
     async def _wait_for_people(self, key: str, question: str, context: str = "", *, commands: list[str] = (),
                                conversational: bool = True, questions: list[str] | None = None,
                                issue: int | None = None, pr: int | None = None, closes_after: timedelta | None = None,
-                               github_url: str | None = None) -> Outcome:
+                               github_url: str | None = None, release: tuple[str, int] | None = None) -> Outcome:
         """Wait for a person on GitHub. A comment starting with one of ``commands`` decides the
         gate; with ``conversational``, any other comment ends the wait too and is returned for
         the agents. Waiting costs nothing and survives any restart, whether it lasts seconds or
-        days. ``closes_after`` gives up after that long; a closed PR ends the wait as well."""
+        days. ``closes_after`` gives up after that long; a closed PR ends the wait as well. With
+        ``release`` (a gate and the request's number), a reviewer's answer on GitHub decides the
+        gate; typed commands are never accepted for it."""
         start = workflow.now()
         closes_at = start + closes_after if closes_after else None
         self._state.gate = Gate(key=key, question=question, context=context[:2000], waiting_since=start.timestamp(),
                                 questions=questions or [], commands=list(commands), github_url=github_url,
-                                closes_at=closes_at.timestamp() if closes_at else None)
+                                closes_at=closes_at.timestamp() if closes_at else None,
+                                approval_ask=release[1] if release else None)
         self._state.status = "waiting"
         self._mark(f"gate:{key}", "waiting")
         # GitHub doesn't redeliver a webhook that failed (say, while the web server restarted),
@@ -193,7 +244,11 @@ class AgentRun:
         await self._catch_up(issue, pr)
         outcome = Outcome()
         while True:
-            outcome = self._take_from_inbox(outcome, commands, conversational)
+            outcome = self._take_from_inbox(outcome, commands, conversational,
+                                            "an approval on GitHub" if release else None)
+            if release and (decision := self._take_decision(*release)):
+                outcome.decision = decision
+                break
             if outcome.command or outcome.comments:
                 break
             if pr and pr in self._closed_prs:
@@ -204,14 +259,21 @@ class AgentRun:
                 outcome.timed_out = True
                 break
             try:
-                await workflow.wait_condition(lambda: bool(self._inbox) or (pr in self._closed_prs if pr else False),
-                                              timeout=remaining)
+                await workflow.wait_condition(
+                    lambda: bool(self._inbox) or bool(release and self._take_decision_pending(*release))
+                    or (pr in self._closed_prs if pr else False), timeout=remaining)
             except asyncio.TimeoutError:
                 pass
         waited = (workflow.now() - start).total_seconds()
         self._state.gate = None
         self._state.status = "running"
-        if outcome.command:
+        if outcome.decision:
+            d = outcome.decision
+            self._mark(f"gate:{key}", "completed",
+                       note=f"{'Approved' if d.approved else 'Rejected'} by @{d.reviewer or 'a reviewer'} on GitHub after {_duration(waited)}")
+            self._prove("D2", f"{key.capitalize()} gate: waited {_duration(waited)} for a GitHub reviewer to approve the "
+                              "deployment, using no compute")
+        elif outcome.command:
             self._mark(f"gate:{key}", "completed", note=f"{outcome.command.name} after {_duration(waited)}")
             self._prove("D2", f"{key.capitalize()} gate: waited {_duration(waited)} for {outcome.command.name} on GitHub, using no compute")
         elif outcome.comments:
@@ -221,7 +283,11 @@ class AgentRun:
                        note="PR closed" if outcome.closed else f"Nobody commented in {_duration(waited)}; continuing")
         return outcome
 
-    def _take_from_inbox(self, outcome: Outcome, commands: list[str], conversational: bool) -> Outcome:
+    def _take_decision_pending(self, gate: str, ask: int) -> bool:
+        return any(d.gate == gate and d.ask == ask for d in self._decisions)
+
+    def _take_from_inbox(self, outcome: Outcome, commands: list[str], conversational: bool,
+                         awaiting: str | None = None) -> Outcome:
         while self._inbox:
             item = self._inbox.pop(0)
             command = _command(item.text)
@@ -230,7 +296,7 @@ class AgentRun:
                 outcome.command = command
                 break
             if command or not conversational:
-                awaited = " or ".join(commands) or "nothing"
+                awaited = awaiting or " or ".join(commands) or "nothing"
                 item.kind, item.status, item.outcome = "noted", "addressed", f"Noted; the run is waiting for {awaited}"
                 continue
             outcome.comments.append(item)
@@ -245,7 +311,7 @@ class AgentRun:
             GitHubActivities.fetch_comments,
             CommentsInput(repo=self._request.repo, issue=issue, pull=pr, since=_iso(since)), **GITHUB)
         for comment in found:
-            self._receive(comment)
+            await self._receive(comment)
 
     # -- Agents ------------------------------------------------------------------------------
 
@@ -258,7 +324,7 @@ class AgentRun:
         await workflow.start_child_workflow(
             workflow_type,
             # Agents' tool calls are always auto-approved: nobody can approve one from GitHub, and
-            # the console only watches. Supervised runs wait for /merge instead (workflow.py).
+            # the console only watches. Supervised runs wait for a reviewer to approve the merge on GitHub instead (workflow.py).
             args=[AgentConfig(), AgentInit(run_id=self._request.run_id, model=model, workspace=workspace,
                                            autonomy="auto")],
             id=agent_id,

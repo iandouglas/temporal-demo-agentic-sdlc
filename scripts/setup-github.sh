@@ -10,10 +10,19 @@
 #   4. requires the agent's check, agentic-sdlc/agent-review, on main, so GitHub shows it as a
 #      Required check that stays pending until the agent is done (main stays locked: nothing merges);
 #   5. with --webhook-url, points the repo's webhook at a hosted copy of the demo, signed with the
-#      GITHUB_WEBHOOK_SECRET in the catalog's runtime secret.
+#      GITHUB_WEBHOOK_SECRET in the catalog's runtime secret;
+#   6. creates the Environments the Release workflow's gates wait on (plan-approval, merge-approval,
+#      production), each with the --reviewers as required reviewers. Those people, and only those,
+#      can promote a run: they click "Review deployments" on the waiting Release run in Actions.
+#      Without --reviewers it keeps whatever reviewers the Environments already have, and refuses to
+#      create one with none.
 #
-#   scripts/setup-github.sh
-#   scripts/setup-github.sh --webhook-url https://agentic-sdlc.tmprl-demo.cloud/webhooks/github
+#   scripts/setup-github.sh --reviewers mikeacjones,another-login
+#   scripts/setup-github.sh --reviewers mikeacjones --webhook-url https://agentic-sdlc.tmprl-demo.cloud/webhooks/github
+#
+# Environments with required reviewers on a private repo need a GitHub plan that includes them.
+# "Prevent self-review" stays off: the demo dispatches the Release run with your token, so you'd
+# otherwise be unable to approve what you started.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DEMO=$(pwd)
@@ -24,12 +33,15 @@ REGION=${AWS_REGION:-us-west-1}
 RUNTIME_SECRET=tmprl-dem-cld/agentic-sdlc/runtime
 CHECK=agentic-sdlc/agent-review
 SAMPLE_BRANCH=samples/discount-rounding
-EVENTS='["issues","issue_comment","pull_request","pull_request_review","pull_request_review_comment"]'
+EVENTS='["issues","issue_comment","pull_request","pull_request_review","pull_request_review_comment","deployment_review","workflow_run"]'
 
 WEBHOOK_URL=""
+REVIEWERS=""
+ENVIRONMENTS="plan-approval merge-approval production"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --webhook-url) WEBHOOK_URL=$2; shift 2 ;;
+    --reviewers) REVIEWERS=$2; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -116,6 +128,25 @@ if [[ -n "$WEBHOOK_URL" ]]; then
     gh api -X POST "repos/$REPO/hooks" --input - <<<"$HOOK" >/dev/null
     echo "webhook $WEBHOOK_URL created"
   fi
+fi
+
+# 6. The Environments the Release workflow's gates wait on --------------------------------------------
+if [[ -n "$REVIEWERS" ]]; then
+  REVIEWER_JSON=$(for login in ${REVIEWERS//,/ }; do
+    id=$(gh api "users/$login" --jq .id) || { echo "No GitHub user $login" >&2; exit 1; }
+    printf '{"type":"User","id":%s}\n' "$id"
+  done | python3 -c 'import json,sys; print(json.dumps({"reviewers": [json.loads(l) for l in sys.stdin], "prevent_self_review": False}))')
+  for environment in $ENVIRONMENTS; do
+    gh api -X PUT "repos/$REPO/environments/$environment" --input - <<<"$REVIEWER_JSON" >/dev/null
+    echo "environment $environment: reviewers $REVIEWERS"
+  done
+else
+  for environment in $ENVIRONMENTS; do
+    COUNT=$(gh api "repos/$REPO/environments/$environment" \
+      --jq '[.protection_rules[] | select(.type == "required_reviewers")] | length' 2>/dev/null || echo 0)
+    [[ "$COUNT" -gt 0 ]] || { echo "Environment $environment has no required reviewers; pass --reviewers LOGIN[,LOGIN]" >&2; exit 1; }
+    echo "environment $environment: keeps its reviewers"
+  done
 fi
 
 echo "Done."

@@ -27,7 +27,7 @@ The seven decision criteria in the console's left rail are the problems, and eac
 - **It's all on one real repo:** [temporal-sa/agentic-sdlc-storefront](https://github.com/temporal-sa/agentic-sdlc-storefront). Every copy of the demo shares it. Each copy labels what it starts (`agentic-sdlc:<copy>`) and only acts on its own label, so you never pick up someone else's PR. `main` is locked: the agents get PRs to "ready to merge", and nothing merges.
 - **Real calls cost real money.** A dependency repair or review costs about $0.10 to $0.60 in estimated model spend; an issue run $0.20 to $1.50. The per-run budget is $3.
 - **Sessions.** Starting a scenario leases you a *session slot*: your own task queue, Workers, environments, faults and GitHub label (`agentic-sdlc:<copy>--sNN`). Opening the console claims nothing, so other people on the page never see your runs. The lease lasts 2 hours after your last action (starting, stopping, a fault, a crash, or a comment on your run's issue or PR; watching never extends it). **Reset** releases it at once. The hosted copy has 8 slots, a crashable workspace 2. When all are taken, **Start a scenario** says so; wait, or free a stuck one ([below](#when-something-goes-wrong)).
-- **Nothing is pre-run.** Act 1 shows "No change has shipped in this session yet" until your first issue run finishes. If you want the result to open the talk, run one before the audience arrives: start an issue scenario on auto merge, reply `/approve` and `/ship`, and let it finish (about 5 minutes), without pressing Reset.
+- **Nothing is pre-run.** Act 1 shows "No change has shipped in this session yet" until your first issue run finishes. If you want the result to open the talk, run one before the audience arrives: start an issue scenario on auto merge, approve the plan and production on GitHub (below), and let it finish (about 5 minutes), without pressing Reset.
 - **Open three tabs:** the console, the Temporal UI, and [the repo's pull requests](https://github.com/temporal-sa/agentic-sdlc-storefront/pulls). Sign in to GitHub as yourself; you'll be commenting.
 - **The GitHub token expires on 2027-10-22.** See [Rotate the GitHub token](#rotate-the-github-token).
 
@@ -103,7 +103,7 @@ Keys: **1–6** switch acts, **N** starts a scenario.
 
 **The audience sees** the planner's questions as a comment on the issue, and in the console the gate card: **Reply on issue #N ↗**.
 
-**Do:** answer on the issue. Then the plan appears as a comment: "Reply `/approve` to start building, or reply with what to change." Reply with a change first if you like (the planner revises it), then `/approve`. **D2** ticks.
+**Do:** answer on the issue. Then the plan appears as a comment that links the waiting **release** run in Actions. Reply with a change first if you like (the planner revises it), then open the run and choose *Review deployments → Approve*. Your GitHub login must be a required reviewer on the `plan-approval` Environment (`scripts/setup-github.sh --reviewers`). Typing `/approve` does nothing. **D2** ticks.
 
 **Say:** "The Workflow is parked on a durable wait. No process is holding it open. It could sit here for a weekend and cost nothing; GitHub's webhook delivers each reply to it."
 
@@ -113,9 +113,9 @@ Keys: **1–6** switch acts, **N** starts a scenario.
 
 **The audience sees** the PR open with the pending agent check, the reviewer's review, then "👀 Reviewed. Comment here to request changes; the agents merge this in 1 min unless someone does."
 
-**Do:** comment on the PR: *"The button should say 'Move to cart', not just an icon."* A coding agent fixes it on the PR branch and the reviewer looks again. **Optional, a scope change:** comment *"Also show how many items are saved in the header"*. The planner calls it a scope change: the PR closes with an explanation, the plan is revised on the issue and needs `/approve` again.
+**Do:** comment on the PR: *"The button should say 'Move to cart', not just an icon."* A coding agent fixes it on the PR branch and the reviewer looks again. **Optional, a scope change:** comment *"Also show how many items are saved in the header"*. The planner calls it a scope change: the PR closes with an explanation, the plan is revised on the issue and needs approving on GitHub again.
 
-**Do:** let the window close. After staging, the issue says "🚦 Staging passed its checks. Try it: …/apps/<your slot>/staging/. Reply `/ship` …, `/stop <reason>`, or comment with what to change …" Open staging, then reply `/ship`. (Optional: comment an adjustment first, like "make the discount banner bigger". A coding agent changes it on staging, staging redeploys, and the issue asks for `/ship` again. A new requirement gets a reply suggesting its own issue.)
+**Do:** let the window close. After staging, the issue says "🚦 Staging passed its checks. Try it: …/apps/<your slot>/staging/. A reviewer approves the production deployment on GitHub …, or comment with what to change …" Open staging, then approve the waiting **release** run's `production` deployment in Actions (*Review deployments*; rejecting it stops the run with your note). (Optional: comment an adjustment first, like "make the discount banner bigger". A coding agent changes it on staging, staging redeploys, and the issue asks for an approval again (the old request is cancelled). A new requirement gets a reply suggesting its own issue.)
 
 ### 6. Break the canary (D4)
 
@@ -137,7 +137,7 @@ To show a clean ship instead, skip this beat. The canary promotes after its chec
 
 ### 7. Change the pipeline mid-run (D5)
 
-**Do:** start an issue scenario and `/approve` its plan. While it's coding, press **5** and click **Roll out v2** (confirm). Then start another issue scenario.
+**Do:** start an issue scenario and approve its plan on GitHub. While it's coding, press **5** and click **Roll out v2** (confirm). Then start another issue scenario.
 
 **The audience sees** **New runs start on** change from v1 to v2, and v1 show "draining: pinned runs still finishing". The in-flight run keeps **pipeline v1** and finishes without a security stage. The new run shows **pipeline v2**, with a **Security** step. **D5** ticks when the v1 run finishes after a v2 run has started.
 
@@ -205,7 +205,8 @@ await workflow.wait_condition(lambda: bool(self._inbox) or (pr in self._closed_p
 **What you need to understand:**
 
 - The web server verifies GitHub's signature, then routes: a new labeled issue or a PR starts a Workflow with a deterministic ID (`<queue>.gh.pr-13`), so a redelivered webhook can't start a second one; a comment becomes a `github_comment` Signal. The runs to Signal are found with a Visibility query on a search attribute each run keeps up to date. Visibility queries aren't billable.
-- A comment starting with a command the gate is waiting for (`/approve`, `/merge`, `/ship`, `/stop`, `/continue`) decides it. Anything else is conversation, which the planner triages: feedback for a coder, or a scope change that goes back to planning. At the production gate, feedback is made on staging and a scope change gets a reply suggesting a new issue. While coders work and nobody's at a gate, a comment steers them.
+- The plan, the merge (when supervised) and production are decided by a reviewer approving a deployment on GitHub, not by a comment: the run dispatches the storefront's `release.yml`, whose job waits on an Environment with required reviewers, and the `deployment_review` webhook comes back as a `release_decision` Signal. Each request is numbered, so a late answer to a replaced request is ignored. The budget and clarify gates still take a comment (`/continue`, `/stop`, `/skip`).
+- Only people with write access are heard. The webhook drops comments from people with no association to the repo, and the run asks GitHub for everyone else's permission before an agent sees their words; a comment from anyone without write access shows in the Conversation tab as ignored. Anything else is conversation, which the planner triages: feedback for a coder, or a scope change that goes back to planning. At the production gate, feedback is made on staging and a scope change gets a reply suggesting a new issue. While coders work and nobody's at a gate, a comment steers them.
 - GitHub doesn't redeliver a failed webhook on its own, so each gate reads the comments once when it opens and de-duplicates by comment ID. There's no polling loop.
 - Everything the agents post carries a hidden marker, so they never read their own comments back as feedback.
 
@@ -348,7 +349,7 @@ deployment = WorkerDeploymentConfig(
 | The agent comments "too many agent runs" | The copy-wide cap across all sessions | Wait for other runs to finish |
 | **Start a scenario** says all sessions are in use | Every slot is leased | Wait (leases end 2 hours after the last action), or terminate a stale `<copy>.slot-NN` Workflow |
 | An issue you open gets no run | It has no slot label, its slot isn't leased, or it was created before the lease began | Start the scenario from the console; the demo ignores unlabeled items |
-| A comment doesn't change anything | The gate wants a command (`/continue` or `/stop` at the budget gate), or the comment started with a command the gate isn't waiting for | The **Conversation** tab says "Noted; the run is waiting for …" |
+| A comment doesn't change anything | The gate wants a command (`/continue` or `/stop` at the budget gate) or a GitHub approval (plan, merge, production), the comment started with a command the gate isn't waiting for, or the commenter doesn't have write access | The **Conversation** tab says "Noted; the run is waiting for …" |
 | Top right says **no workers** and nothing moves | You crashed the worker, or the process died | Press **Bring it back** (it also restores itself after 5 minutes); locally, **Start a worker** or check `.logs/worker-v1.log` |
 | A step is pink with `GitHub 401` or `403` | The GitHub token expired or lacks a permission | [Rotate the GitHub token](#rotate-the-github-token) |
 | A step is pink with `ProviderRejected` | A model name or key is wrong for that provider | Pick another model in **Start a scenario**, or check the key |

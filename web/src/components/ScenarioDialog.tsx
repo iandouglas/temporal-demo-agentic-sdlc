@@ -17,7 +17,7 @@ const SCENARIOS: { kind: RunKind; name: string; note: string }[] = [
   { kind: "review", name: "A PR for the agent to review",
     note: "Opens a PR with a subtle bug. The agent's required check stays pending until it has reviewed it inline. Reply on the PR to ask for a fix." },
   { kind: "issue", name: "An issue, all the way to production",
-    note: "Opens an issue labeled agent. The planner asks and plans on the issue; reply /approve, comment to steer, review the PR, then /ship." },
+    note: "Opens an issue labeled agent. The planner asks and plans on the issue; a reviewer approves the plan on GitHub, comment to steer, review the PR, then a reviewer approves production on GitHub." },
 ];
 
 interface Started { url: string; kind: RunKind; open_pr: boolean }
@@ -130,11 +130,11 @@ export function ScenarioDialog({ config, onClose, onStarted }: {
             <span>Merging the issue's PR</span>
             <div className="segmented">
               <button aria-current={autonomy === "auto" || undefined} onClick={() => setAutonomy("auto")}>Auto merge</button>
-              <button aria-current={autonomy === "supervised" || undefined} onClick={() => setAutonomy("supervised")}>Wait for /merge</button>
+              <button aria-current={autonomy === "supervised" || undefined} onClick={() => setAutonomy("supervised")}>Wait for merge approval</button>
             </div>
             <small className="muted">{autonomy === "auto"
               ? "After an approving review, agents merge unless someone comments on the PR within a minute."
-              : "The PR waits until someone replies /merge on it."}</small>
+              : "The PR waits until a reviewer approves the merge on GitHub."}</small>
           </div>
         )}
 

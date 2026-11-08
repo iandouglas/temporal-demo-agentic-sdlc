@@ -7,7 +7,7 @@ Agents now write much of the code. GitHub measured that over 40% of pull request
 What you'll see go wrong, and what happens next:
 
 - The worker dies while an agent is fixing the broken upgrade. A new worker continues from the agent's last finished call, and the token meter doesn't jump.
-- The run waits for `/approve` on the plan and `/ship` for production. It can wait minutes or days, costs nothing while it waits, and a GitHub comment resumes it.
+- The run waits for a reviewer to approve the plan and production in GitHub's UI. It can wait minutes or days, costs nothing while it waits, and the approval resumes it.
 - The canary fails in production. The pipeline stops its traffic, reverts the merge through a PR and reopens the issue.
 
 Everything is driven by GitHub's webhooks and everyone talks to the agents on GitHub. The console is a window onto what the agents are doing.
@@ -15,7 +15,8 @@ Everything is driven by GitHub's webhooks and everyone talks to the agents on Gi
 - **Agents are Workflows.** Each planner, coder and reviewer is a [temporal-agent-harness](https://github.com/temporal-sa/temporal-agent-harness) agent running [Pydantic AI](https://ai.pydantic.dev/durable_execution/temporal/) on Anthropic, OpenAI or Gemini. Every model call and tool call is an [Activity](https://docs.temporal.io/activities), so a crash loses nothing that already finished.
 - **Each scenario is one Workflow** that reads top to bottom as its lifecycle: [`DependencyRepair`](agentic_sdlc/pipeline/dependency.py), [`PullRequestReview`](agentic_sdlc/pipeline/review.py) and [`IssueToProduction`](agentic_sdlc/pipeline/workflow.py), sharing [`pipeline/base.py`](agentic_sdlc/pipeline/base.py). They start agents as [Child Workflows](https://docs.temporal.io/child-workflows), with one coder per subtask in parallel.
 - **GitHub drives it, with no polling.** The web server verifies each webhook's signature, starts a run for a new issue or PR, and delivers every comment to the runs watching that issue or PR as a [Signal](https://docs.temporal.io/develop/python/workflows/message-passing), found with a Visibility query on a search attribute. A run waiting for people costs nothing.
-- **People steer the agents on GitHub.** `/approve`, `/merge`, `/ship`, `/stop` and `/continue` decide gates. Any other comment is conversation: an answer to the planner, steering for coders at work, feedback fixed on the PR branch and re-reviewed, or a new requirement that sends the run back to planning.
+- **Promotions are approvals on GitHub, not comments.** At the plan, the merge (when supervised) and production, the run dispatches the storefront's [`release.yml`](sandbox-template/.github/workflows/release.yml), whose job waits on a GitHub Environment (`plan-approval`, `merge-approval`, `production`) with required reviewers. A reviewer opens the waiting run in Actions and chooses *Review deployments*; the `deployment_review` webhook carries the answer back as a Signal. Who may promote is GitHub's decision: the Environment's reviewers, and no one else, whatever they type.
+- **People steer the agents on GitHub, if they have write access.** Only people with write access to the repo are heard: the webhook drops comments from people with no association to the repo, and the run checks everyone else's permission with GitHub before an agent sees what they said (failing closed). `/skip` and `/continue` answer the clarify and budget gates. Any other comment is conversation: an answer to the planner, steering for coders at work, feedback fixed on the PR branch and re-reviewed, or a new requirement that sends the run back to planning.
 - **The agent gates PRs** with a required commit status, `agentic-sdlc/agent-review`, pending until it's done.
 - **Retries come from [Retry Policies](https://docs.temporal.io/encyclopedia/retry-policies),** including GitHub's `Retry-After`. A per-run budget is enforced by the Workflow before every agent turn.
 - **The canary bakes on a durable timer.** If its checks fail, a saga stops the traffic, reverts the merge through a PR and reopens the issue.
@@ -73,10 +74,10 @@ All of it happens on [temporal-sa/agentic-sdlc-storefront](https://github.com/te
 
 **Issue to production.** Someone opens an issue labeled `agent`.
 
-1. The planner asks on the issue about anything it leaves open, then posts a plan of one to three subtasks. `/approve` starts the build; any other reply revises the plan.
+1. The planner asks on the issue about anything it leaves open, then posts a plan of one to three subtasks. A reviewer approving the plan on GitHub starts the build; any reply revises the plan.
 2. One coding agent per subtask works on its own branch, and every edit is committed and pushed, so the branch is the durable workspace. A comment on the issue while they work becomes their next instruction. The pipeline runs the tests itself and sends failures back.
-3. Branches merge into a PR against the run's own base branch. A reviewer agent reviews it, then people comment on the PR: the planner triages each comment as feedback (a coder fixes it, the reviewer looks again) or a scope change (the PR closes and the run re-plans). On auto merge it merges after a quiet minute; supervised waits for `/merge`.
-4. It deploys to staging, checks it and asks on the issue: `/ship` or `/stop <reason>`. The canary takes 20% of production traffic for 90 seconds of checks, then it's promoted, or rolled back by a saga that also reverts the merge and reopens the issue.
+3. Branches merge into a PR against the run's own base branch. A reviewer agent reviews it, then people comment on the PR: the planner triages each comment as feedback (a coder fixes it, the reviewer looks again) or a scope change (the PR closes and the run re-plans). On auto merge it merges after a quiet minute; supervised waits for a reviewer to approve the merge on GitHub.
+4. It deploys to staging, checks it and asks for a reviewer to approve production on GitHub (rejecting it stops the run, with their note). The canary takes 20% of production traffic for 90 seconds of checks, then it's promoted, or rolled back by a saga that also reverts the merge and reopens the issue.
 
 The storefront environments are served by the web server straight from the commits GitHub holds, so agent-written code only runs in the visitor's browser and in the worker's sandboxed test run.
 
@@ -106,7 +107,7 @@ Open the console at http://localhost:8000 and the Temporal UI at http://localhos
 | `uv run python scripts/dev.py` | Temporal, Redis, the web server and a worker per pipeline version (v1, v2), with the console's kill-the-process and start controls |
 | `uv run python scripts/drive_run.py dependency` | A scenario from the command line (`dependency`, `review` or `issue`), answering on GitHub with `gh` |
 | `uv run python scripts/drive_conversation.py` | Rehearses every steering beat of the issue flow on GitHub |
-| `scripts/setup-github.sh [--webhook-url URL]` | Labels, rulesets, the template on `main`, the sample PR branch, and the hosted webhook |
+| `scripts/setup-github.sh --reviewers LOGIN[,LOGIN] [--webhook-url URL]` | Labels, rulesets, the template on `main`, the sample PR branch, the hosted webhook, and the approval Environments with their required reviewers |
 | `uv run pytest` | Pipeline tests against a local dev server, with fake agents |
 | `docker compose up --build` | The catalog's process layout on one machine |
 | `npm --prefix web run dev` | The console with hot reload on :5173, proxied to the API on :8000 |

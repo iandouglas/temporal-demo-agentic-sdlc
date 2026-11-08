@@ -372,10 +372,10 @@ So let the agents decide inside a step, and let Temporal run the process.
     d.label_box(s, int(0.5 * IN), int(2.1 * IN), int(1.4 * IN), int(0.7 * IN), "GITHUB\nISSUE", edge=GREEN)
     wf = d.box(s, int(2.3 * IN), int(1.35 * IN), int(5.0 * IN), int(2.95 * IN), fill=RGBColor(0x1A, 0x18, 0x30), edge=UV, width=1.5)
     d.text(s, int(2.45 * IN), int(1.42 * IN), int(4.8 * IN), int(0.3 * IN), "IssueToProduction Workflow", size=10, color=INDIGO, font=MONO)
-    steps = [("PLANNER\nAGENT", 2.5, 1.95, PURPLE, MSO_SHAPE.OVAL), ("◆ /approve", 3.75, 1.95, YELLOW, MSO_SHAPE.DIAMOND),
+    steps = [("PLANNER\nAGENT", 2.5, 1.95, PURPLE, MSO_SHAPE.OVAL), ("◆ Approve", 3.75, 1.95, YELLOW, MSO_SHAPE.DIAMOND),
              ("CODER", 5.0, 1.75, PURPLE, MSO_SHAPE.OVAL), ("CODER", 5.0, 2.45, PURPLE, MSO_SHAPE.OVAL),
              ("REVIEW\nAGENT", 6.15, 1.95, PURPLE, MSO_SHAPE.OVAL),
-             ("STAGING", 2.5, 3.2, CYAN, MSO_SHAPE.RECTANGLE), ("◆ /ship", 3.75, 3.2, YELLOW, MSO_SHAPE.DIAMOND),
+             ("STAGING", 2.5, 3.2, CYAN, MSO_SHAPE.RECTANGLE), ("◆ Approve", 3.75, 3.2, YELLOW, MSO_SHAPE.DIAMOND),
              ("CANARY", 5.0, 3.2, CYAN, MSO_SHAPE.RECTANGLE), ("ROLLBACK\nSAGA", 6.15, 3.2, CYAN, MSO_SHAPE.RECTANGLE)]
     for label, x, y, color, shape in steps:
         d.label_box(s, int(x * IN), int(y * IN), int(1.0 * IN), int(0.62 * IN), label, edge=color, size=7, shape=shape)
@@ -401,7 +401,7 @@ The job queue, the state table, the cron job and the Slack bot are gone. That's 
     d.headline(s, "Seven things to prove before agents ship your code.")
     criteria = [
         ("D1", "An agent crash loses no work and re-spends no tokens", "Kill the worker mid-fix"),
-        ("D2", "Humans stay accountable without babysitting", "/approve and /ship on GitHub"),
+        ("D2", "Humans stay accountable without babysitting", "Approvals in GitHub, by its reviewers"),
         ("D3", "Parallel agents, flaky APIs and spend stay under control", "Rate-limit one agent; hit the budget"),
         ("D4", "A bad change in production is caught and undone", "Break the canary"),
         ("D5", "The pipeline can change while runs are in flight", "Roll out v2 mid-run"),
@@ -431,9 +431,9 @@ Watch the run appear from the webhook; the tests fail, the coding agent diagnose
 Do: while it fixes the code, kill the worker. Point at the yellow banner. Start it again; the agent carries on. Optionally Inject 429 on its card.
 Do: show the PR: the diagnosis comment, the agent's commit on the bump branch, the rewritten description, the review, the green check, the locked merge button.
 Do: Start a scenario, "A PR for the agent to review". Show the inline review. Reply "Please fix the rounding" on the PR; watch it in the Conversation tab, fixed and re-reviewed.
-Do: Start a scenario, an open-ended issue ("Let customers save items for later"). Answer the planner on the issue, reply /approve.
+Do: Start a scenario, an open-ended issue ("Let customers save items for later"). Answer the planner on the issue, then approve the plan's release run on GitHub.
 Do: while the coders work, comment on the issue to steer them; watch it become their next turn.
-Do: at the review window, comment on the PR. At staging, open it, then reply /ship on the issue. While the canary bakes, click Break the canary.
+Do: at the review window, comment on the PR. At staging, open it, then approve the production deployment on GitHub. While the canary bakes, click Break the canary.
 Watch the rollback branch appear, the revert PR open, and the issue reopen.
 Do: press 5, Roll out v2 during a second issue run. Then press 6 for the scorecard.
 """)
@@ -470,7 +470,7 @@ The agent's check is required, so nobody merges the upgrade while the agents are
          "Activities with heartbeats · Event History · a retried Activity re-attaches to the same agent turn",
          "Each model call and tool call is an Activity, so the ones that finished are in the agent's Event History and never run twice. That's the difference between a crash costing seconds and costing the whole task."),
         ("D2", "People approved the plan and the release, on their own schedule.", "d2-gate.jpg",
-         "The run waited for /approve and /ship on the issue, and the agent's required check held each PR. No process held the waits open: they cost nothing and would have survived a restart or a deploy, for minutes or for days.",
+         "The run waited for a reviewer to approve its deployments on GitHub, and the agent's required check held each PR. No process held the waits open: they cost nothing and would have survived a restart or a deploy, for minutes or for days.",
          "Durable waits · Signals from GitHub webhooks · a required commit status",
          "A reply on GitHub reaches the Workflow as a Signal; nothing polls. Waiting is free, so you put the gate where accountability belongs, not where it's cheap."),
         ("D3", "Agents worked in parallel and retried through rate limits.", "d3-lanes.jpg",

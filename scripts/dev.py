@@ -43,7 +43,8 @@ ROOT = Path(__file__).resolve().parent.parent
 LOGS = ROOT / ".logs"
 CONTROL_PORT = 8765
 TEMPORAL = ["temporal", "--disable-config-file", "--address", "localhost:7233"]
-WEBHOOK_EVENTS = "issues,issue_comment,pull_request,pull_request_review,pull_request_review_comment"
+WEBHOOK_EVENTS = ("issues,issue_comment,pull_request,pull_request_review,pull_request_review_comment,"
+                  "deployment_review,workflow_run")
 SEARCH_ATTRIBUTE = ["--name", "AgenticSdlcGitHubRefs", "--type", "KeywordList"]
 
 parser = argparse.ArgumentParser()

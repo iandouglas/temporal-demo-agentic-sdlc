@@ -13,6 +13,15 @@ on its own slots' items and drops the rest:
 A slot's label only counts while the slot is leased, and only for items opened after the lease
 began, so a reused slot never inherits the last session's issues.
 
+Who the agents listen to: a comment from someone GitHub already knows has no write access (no
+association with the repo, or only a past contributor) is dropped here, before any Signal. The
+run checks everyone else's access with GitHub before acting on what they said.
+
+Approvals: the run asks a reviewer to approve a deployment of the storefront's release workflow
+(a GitHub Environment with required reviewers). The run is named ``release <gate> <issue:N|pr:N>
+#<ask>``, and ``deployment_review`` (approved or rejected) or a cancelled ``workflow_run`` carries
+that name back as a ``release_decision`` Signal. Who may approve is GitHub's decision alone.
+
 ``route`` turns a delivery into Actions: start a run, Signal the runs watching an issue or PR, or
 nothing. ``handle`` carries them out against Temporal.
 """
@@ -47,8 +56,8 @@ from temporalio.exceptions import (
 from temporalio.service import RPCError
 
 from agentic_sdlc import config
-from agentic_sdlc.activities.github import BOT_MARKER, CommentInput, HumanComment
-from agentic_sdlc.models import Autonomy, RoleModels, RunKind, RunRequest, RunState
+from agentic_sdlc.activities.github import BOT_MARKER, UNTRUSTED_ASSOCIATIONS, CommentInput, HumanComment
+from agentic_sdlc.models import Autonomy, ReleaseDecision, RoleModels, RunKind, RunRequest, RunState
 from agentic_sdlc.pipeline import dependency, review, workflow
 from agentic_sdlc.slots import Slot
 from agentic_sdlc.web import sessions
@@ -62,6 +71,7 @@ WORKFLOW_FOR_KIND = {"issue": "IssueToProduction", "dependency": "DependencyRepa
 RUN_ID_FOR_KIND = {"issue": "issue", "dependency": "pr", "review": "review"}
 # The console shows a run's steps before a worker has published them.
 STEPS_FOR_KIND = {"issue": workflow._initial_steps, "dependency": dependency._steps, "review": review._steps}
+RELEASE_RUN = re.compile(r"^release (plan|merge|production) ((?:issue|pr):\d+) #(\d+)$")
 BUMP_TITLE = re.compile(r"^[Bb]ump \S+ from \S+ to \S+")
 # PRs from the demo's scenario branches (the bump, the sample PR) belong to whichever copy's label
 # they carry. A PR opened from GitHub's prefilled page has it when it opens; one opened through the
@@ -88,7 +98,7 @@ class StartRun:
 @dataclass(frozen=True)
 class SignalRuns:
     ref: str  # "issue:12" or "pr:13"
-    signal: Literal["github_comment", "pull_request_closed"]
+    signal: Literal["github_comment", "pull_request_closed", "release_decision"]
     arg: object
 
 
@@ -97,7 +107,7 @@ Action = StartRun | SignalRuns
 
 class RunSettings(BaseModel):
     """How a copy's runs are set up, chosen in its console: each agent's model, and whether
-    merging waits for /merge."""
+    merging waits for a reviewer's approval on GitHub."""
 
     models: RoleModels = Field(default_factory=RoleModels)
     autonomy: Autonomy = "auto"
@@ -174,11 +184,36 @@ def route(event: str, payload: dict) -> list[Action]:
         number = payload["pull_request"]["number"]
         return [SignalRuns(f"pr:{number}", "pull_request_closed", number)]
 
+    if event in ("deployment_review", "workflow_run"):
+        return _release_decision(event, payload)
+
     comment = _comment(event, payload)
     if comment is None:
         return []
     ref = f"pr:{comment.number}" if _on_pull_request(event, payload) else f"issue:{comment.number}"
     return [SignalRuns(ref, "github_comment", comment)]
+
+
+def _release_decision(event: str, payload: dict) -> list[Action]:
+    """A reviewer's answer to a release run's deployment, as a Signal to the run that asked."""
+    run = payload.get("workflow_run") or {}
+    match = RELEASE_RUN.match(run.get("display_title") or "")
+    if not match:
+        return []  # some other workflow's deployment
+    gate, subject, ask = match.group(1), match.group(2), int(match.group(3))
+    action, url = payload.get("action"), run.get("html_url", "")
+    if event == "deployment_review" and action in ("approved", "rejected"):
+        reviewer = (payload.get("approver") or payload.get("sender") or {}).get("login", "")
+        decision = ReleaseDecision(gate=gate, ask=ask, approved=action == "approved", reviewer=reviewer,
+                                   comment=(payload.get("comment") or "")[:500], url=url)
+    elif event == "workflow_run" and action == "completed" and run.get("conclusion") == "cancelled":
+        # Cancelled or expired while waiting. (A rejection also ends the run, as a failure, but its
+        # deployment_review has already said so.)
+        decision = ReleaseDecision(gate=gate, ask=ask, approved=False, reviewer="GitHub",
+                                   comment="The approval request was cancelled or expired.", url=url)
+    else:
+        return []
+    return [SignalRuns(subject, "release_decision", decision)]
 
 
 def _comment(event: str, payload: dict) -> HumanComment | None:
@@ -196,6 +231,8 @@ def _comment(event: str, payload: dict) -> HumanComment | None:
     body = raw.get("body") or ""
     if _from_bot(body):
         return None  # checked before the body is shortened: the marker is at the end of it
+    if raw.get("author_association") in UNTRUSTED_ASSOCIATIONS:
+        return None  # can't have write access; the run checks everyone else's
     if file:
         body = f"(on {file}) {body}"
     return HumanComment(id=f"{kind}:{raw['id']}", number=number, author=(raw.get("user") or {}).get("login", "someone"),

@@ -235,6 +235,50 @@ def test_a_review_with_a_body_is_a_comment_and_a_bare_approval_is_not():
     assert webhooks.route("pull_request_review", review) == []
 
 
+@pytest.mark.parametrize("association", ["NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "CONTRIBUTOR"])
+def test_a_comment_from_someone_with_no_write_access_is_dropped_before_any_signal(association):
+    event = comment_event()
+    event["comment"]["author_association"] = association
+    assert webhooks.route("issue_comment", event) == []
+
+
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
+def test_a_comment_from_someone_who_may_have_write_access_is_delivered_for_the_run_to_check(association):
+    event = comment_event()
+    event["comment"]["author_association"] = association
+    assert len(webhooks.route("issue_comment", event)) == 1
+
+
+def release_event(event_action, title="release production issue:12 #2", **extra):
+    return {"action": event_action, "repository": {"full_name": REPO}, "approver": {"login": "dana"},
+            "comment": "Ship it", "workflow_run": {"display_title": title, "html_url": "https://x/runs/9", **extra}}
+
+
+def test_a_reviewers_approval_signals_the_run_that_asked_for_it():
+    [action] = webhooks.route("deployment_review", release_event("approved"))
+    assert (action.ref, action.signal) == ("issue:12", "release_decision")
+    d = action.arg
+    assert (d.gate, d.ask, d.approved, d.reviewer, d.comment) == ("production", 2, True, "dana", "Ship it")
+
+
+def test_a_rejection_signals_the_run_with_the_reviewers_note():
+    [action] = webhooks.route("deployment_review", release_event("rejected", title="release merge pr:13 #1"))
+    assert action.ref == "pr:13" and not action.arg.approved and action.arg.gate == "merge"
+
+
+def test_a_requested_review_and_other_workflows_signal_nothing():
+    assert webhooks.route("deployment_review", release_event("requested")) == []
+    assert webhooks.route("deployment_review", release_event("approved", title="Deploy docs")) == []
+
+
+def test_a_release_run_cancelled_or_expired_while_waiting_counts_as_a_rejection():
+    event = release_event("completed", conclusion="cancelled")
+    [action] = webhooks.route("workflow_run", event)
+    assert not action.arg.approved and "cancelled or expired" in action.arg.comment
+    assert webhooks.route("workflow_run", release_event("completed", conclusion="failure")) == []  # a rejection says so itself
+    assert webhooks.route("workflow_run", release_event("completed", conclusion="success")) == []
+
+
 def test_the_bots_own_comments_are_ignored():
     assert webhooks.route("issue_comment", comment_event(body=f"Plan\n{BOT_MARKER}")) == []
 

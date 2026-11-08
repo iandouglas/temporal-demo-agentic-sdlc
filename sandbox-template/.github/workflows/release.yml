@@ -1,0 +1,49 @@
+# The agentic SDLC demo's promotions. When a run reaches a gate (the plan, the merge when
+# supervised, production) it dispatches this workflow, and the job for that gate waits on a
+# GitHub Environment with required reviewers. A reviewer approves or rejects the deployment in
+# GitHub's UI ("Review deployments" on this run); only the people listed on the Environment can.
+# The demo hears the answer through the repository webhook (deployment_review) and carries on.
+#
+# The jobs do nothing once approved. The approval is the point, and the run's name is how the
+# demo finds which run an answer belongs to, so don't change its format.
+name: Release
+
+run-name: release ${{ inputs.gate }} ${{ inputs.subject }} #${{ inputs.ask }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: plan, merge or production
+        required: true
+      subject:
+        description: The issue or pull request the run is about, like issue:12
+        required: true
+      ask:
+        description: Which request this is for the gate (a new request replaces an older one)
+        required: true
+      summary:
+        description: What the change is
+        default: ""
+
+permissions: {}
+
+jobs:
+  plan-approval:
+    if: inputs.gate == 'plan'
+    runs-on: ubuntu-latest
+    environment: plan-approval
+    steps:
+      - run: echo "Plan approved for ${{ inputs.subject }}"
+  merge-approval:
+    if: inputs.gate == 'merge'
+    runs-on: ubuntu-latest
+    environment: merge-approval
+    steps:
+      - run: echo "Merge approved for ${{ inputs.subject }}"
+  production:
+    if: inputs.gate == 'production'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo "Production approved for ${{ inputs.subject }}"

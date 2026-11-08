@@ -5,7 +5,8 @@
     uv run python scripts/drive_run.py issue [--issue free-shipping] [--break-canary] [--hold production]
 
 Like a presenter would, it starts the scenario through the console's API, then acts only on
-GitHub: `/approve`, `/ship`, `/continue`, or a comment. A dependency or review run ends when the
+GitHub: approving the plan and production as a reviewer (your gh login must be an Environment
+reviewer), `/continue`, or a comment. A dependency or review run ends when the
 script closes its PR. Needs scripts/dev.py (or a hosted copy) receiving the repo's webhooks.
 """
 
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from agentic_sdlc import config
+from github_approval import approve
 
 parser = argparse.ArgumentParser()
 parser.add_argument("kind", choices=["issue", "dependency", "review"])
@@ -28,7 +30,8 @@ parser.add_argument("--hold", default="", help="comma-separated gates to leave w
 args = parser.parse_args()
 
 http = httpx.Client(base_url=args.base, timeout=60)
-REPLIES = {"plan": "/approve", "production": "/ship", "budget": "/continue", "clarify": "/skip"}
+REPLIES = {"budget": "/continue", "clarify": "/skip"}
+APPROVALS = ("plan", "production")  # approved on GitHub, not by a comment
 
 
 def comment(github_url: str, body: str) -> None:
@@ -86,6 +89,9 @@ while True:
             else:
                 subprocess.run(["gh", "pr", "close", target.rsplit("/", 1)[-1], "--repo", config.GITHUB_SANDBOX_REPO], check=True)
                 print("  closed the PR")
+        elif gate["key"] in APPROVALS:
+            approve(gate["key"], f"issue:{run['issue_url'].rsplit('/', 1)[-1]}")
+            print(f"  gate {gate['key']}: approved the deployment")
         elif gate["key"] in REPLIES:
             comment(target, REPLIES[gate["key"]])
             print(f"  gate {gate['key']}: replied {REPLIES[gate['key']]}")

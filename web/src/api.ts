@@ -13,6 +13,7 @@ export interface Step {
 export interface Gate {
   key: "clarify" | "plan" | "merge" | "production" | "budget" | "conversation"; question: string; context: string; waiting_since: number;
   questions: string[]; commands: string[]; closes_at: number | null; github_url: string | null;
+  approval_ask: number | null; // set when a reviewer approves a deployment on GitHub decides this gate
 }
 export interface Feedback {
   id: string; source: "github"; author: string; text: string; url: string | null; at: number; stage: string;

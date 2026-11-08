@@ -4,8 +4,8 @@
 
 It opens a deliberately open-ended issue through the console's "Start a scenario", then plays a
 developer entirely on GitHub with your `gh` CLI: answers the planner's questions on the issue,
-replies /approve, steers the coders with an issue comment while they work, comments on the PR,
-asks for a new requirement on the PR (which sends the run back to planning) and replies /ship.
+approves the plan on GitHub, steers the coders with an issue comment while they work, comments on the PR,
+asks for a new requirement on the PR (which sends the run back to planning) and approves production on GitHub.
 Every step prints what the run did with it.
 """
 
@@ -17,6 +17,7 @@ import time
 import httpx
 
 from agentic_sdlc import config
+from github_approval import approve
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--base", default="http://localhost:8000")
@@ -82,7 +83,8 @@ if gate(v) == "clarify":
                        "Saved items don't count towards the totals.")
     v = wait_for(lambda v: gate(v) == "plan", "the plan")
 print("  plan:", v["run"]["plan"]["summary"][:160])
-comment(issue_url, "/approve")
+issue_subject = f"issue:{issue_url.rsplit('/', 1)[-1]}"
+approve("plan", issue_subject)
 
 v = wait_for(lambda v: any(s["lane"] and s["status"] == "active" for s in v["run"]["steps"]), "a coder")
 comment(issue_url, "Keep the saved-items logic pure and tested, like the rest of cart.js.")
@@ -103,10 +105,10 @@ if not args.skip_scope_change:
     print("  asked for a new requirement on the PR")
     v = wait_for(lambda v: gate(v) == "plan" and v["run"]["plan_revision"] == 2, "the revised plan")
     print("  revision 2 plan:", v["run"]["plan"]["summary"][:160])
-    comment(issue_url, "/approve")
+    approve("plan", issue_subject)
 
 v = wait_for(lambda v: gate(v) == "production", "the production gate", timeout=1800)
-comment(issue_url, "/ship")
+approve("production", issue_subject)
 v = wait_for(lambda v: v["closed"], "the end", timeout=900)
 print("FINAL", v["run"]["status"], f"${v['run']['usage']['cost_usd']:.2f}", v["run"]["issue_url"], v["run"]["pr_url"])
 show_conversation(v)

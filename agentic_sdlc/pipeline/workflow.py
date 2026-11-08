@@ -6,10 +6,13 @@ stop spending, and how to undo a bad release. Read ``run`` top to bottom; it is 
 lifecycle.
 
 People drive it entirely from GitHub. The planner asks its questions on the issue and people
-reply there; ``/approve`` approves the plan; a comment while coders work steers them; comments on
-the PR are feedback (fixed on the spot) or a scope change (the run goes back to planning); a
-comment once the change is on staging gets it adjusted there; and ``/ship`` or ``/stop`` decides
-the release. The console only shows what's happening.
+reply there; a comment while coders work steers them; comments on the PR are feedback (fixed on
+the spot) or a scope change (the run goes back to planning); a comment once the change is on
+staging gets it adjusted there. Only people with write access are heard. The three promotions,
+the plan, the merge (when supervised) and production, are not comments: the run starts a release
+workflow in the storefront repo whose job waits on a GitHub Environment with required reviewers,
+and a reviewer approves or rejects the deployment in GitHub's UI. That is where the permission to
+promote lives. The console only shows what's happening.
 
 Every agent is a child Workflow (agents/workflows.py) whose model calls and tool calls are
 Activities, so a crashed worker, a rate-limited provider or a two-hour wait for a person loses
@@ -163,12 +166,17 @@ class IssueToProduction(AgentRun):
                 plan.subtasks = plan.subtasks[:3]
                 self._state.plan = plan
                 self._detail("plan", f"{len(plan.subtasks)} subtask(s): " + ", ".join(s.title for s in plan.subtasks))
-                await self._post(repo.issue_number, _plan_comment(plan, self._state.plan_revision), agent=PLANNER,
-                                 labels=["agent-plan"])
+                await self._post(repo.issue_number, _plan_comment(plan, self._state.plan_revision, repo.repo),
+                                 agent=PLANNER, labels=["agent-plan"])
+            ask = await self._request_release("plan", f"issue:{repo.issue_number}", repo.base_branch)
             outcome = await self._wait_for_people(
-                "plan", "The plan is on the issue, waiting for /approve", plan.summary,
-                commands=["/approve"], issue=repo.issue_number, github_url=repo.issue_url)
-            if outcome.command:
+                "plan", "The plan is on the issue, waiting for a reviewer to approve it on GitHub", plan.summary,
+                issue=repo.issue_number, github_url=_release_url(repo.repo), release=("plan", ask))
+            if outcome.decision:
+                if not outcome.decision.approved:
+                    raise ApplicationError(
+                        f"The plan was rejected by @{outcome.decision.reviewer}: {outcome.decision.comment or 'no reason given'}",
+                        non_retryable=True)
                 return plan
             for item in outcome.comments:
                 item.kind = "plan_feedback"
@@ -299,21 +307,28 @@ class IssueToProduction(AgentRun):
     async def _review_window(self, repo: RunRepo, plan: Plan, pr: PullRequest) -> Feedback | None:
         """People review the PR on GitHub. Feedback goes to a coding agent and the run comes
         back here; a scope change is returned so the run can re-plan. On auto merge the window
-        closes by itself after a quiet minute; supervised waits for /merge."""
+        closes by itself after a quiet minute; supervised waits for a reviewer to approve the merge on GitHub."""
         auto = self._request.autonomy == "auto"
         window = timedelta(seconds=self._request.review_window_seconds) if auto else None
         await self._set_check(self._integration_branch, "success", "Agent review passed")
         await self._post(pr.number, "👀 Reviewed. Comment here to request changes; "
                                     + (f"the agents merge this in {_duration(window.total_seconds())} unless someone does."
-                                       if window else "reply `/merge` when it's ready to merge."))
+                                       if window else "a reviewer approves the merge on GitHub (the waiting **release** run in "
+                                                      f"[Actions]({_release_url(repo.repo)}), *Review deployments*) when it's ready."))
         planner = await self._planner(Workspace(repo=repo.repo, branch=repo.base_branch))
         for _round in range(MAX_REVIEW_ROUNDS):
+            ask = None if auto else await self._request_release("merge", f"pr:{pr.number}", self._integration_branch)
             outcome = await self._wait_for_people(
-                "merge", "Agents merge unless someone comments" if auto else "Waiting for /merge on the PR",
-                self._state.review.summary if self._state.review else "", commands=[] if auto else ["/merge"],
-                issue=repo.issue_number, pr=pr.number, closes_after=window, github_url=pr.url)
+                "merge", "Agents merge unless someone comments" if auto else "Waiting for a reviewer to approve the merge on GitHub",
+                self._state.review.summary if self._state.review else "",
+                issue=repo.issue_number, pr=pr.number, closes_after=window, github_url=pr.url,
+                release=None if auto else ("merge", ask))
+            if outcome.decision and not outcome.decision.approved:
+                raise ApplicationError(
+                    f"The merge was rejected by @{outcome.decision.reviewer}: {outcome.decision.comment or 'no reason given'}",
+                    non_retryable=True)
             if not outcome.comments:
-                return None  # /merge, or nobody commented before the window closed
+                return None  # approved, or nobody commented before the window closed
             for item in outcome.comments:
                 await self._triage(planner, plan, item)
             scope_changes = [c for c in outcome.comments if c.kind == "scope_change"]
@@ -359,7 +374,7 @@ class IssueToProduction(AgentRun):
         await workflow.execute_activity_method(GitHubActivities.close_pull_request, ClosePrInput(
             repo=repo.repo, pr_number=pr.number,
             comment=f"🔁 This changes the scope: {change.reason}\n\nClosing this PR. The planner will revise the plan "
-                    "on the issue, and it needs `/approve` again before agents write more code.",
+                    "on the issue, and a reviewer has to approve it on GitHub again before agents write more code.",
             agent=PLANNER,
         ), **GITHUB)
         self._state.plan_revision += 1
@@ -400,18 +415,19 @@ class IssueToProduction(AgentRun):
         announce = True
         while True:
             if announce:
-                await self._post(repo.issue_number, f"🚦 Staging passed its checks.{staging}\n\nReply `/ship` to send it "
-                                                    f"to production through a {CANARY_WEIGHT}% canary, `/stop <reason>` to "
-                                                    "stop here, or comment with what to change and an agent will adjust it "
-                                                    "on staging.")
+                ask = await self._request_release("production", f"issue:{repo.issue_number}", repo.base_branch)
+                await self._post(repo.issue_number, f"🚦 Staging passed its checks.{staging}\n\nA reviewer approves the "
+                                                    f"production deployment on GitHub to send it through a {CANARY_WEIGHT}% "
+                                                    f"canary, or rejects it to stop here: open the waiting **release** run in "
+                                                    f"[Actions]({_release_url(repo.repo)}) and choose *Review deployments*. "
+                                                    "Or comment with what to change and an agent will adjust it on staging.")
             outcome = await self._wait_for_people(
-                "production", "Waiting for /ship, /stop or a comment on the issue",
+                "production", "Waiting for a reviewer to approve production on GitHub, or a comment on the issue",
                 f"Staging passed its checks. The canary starts at {CANARY_WEIGHT}% of traffic.",
-                commands=["/ship", "/stop"], issue=repo.issue_number, github_url=repo.issue_url)
-            if outcome.command:
-                for item in outcome.comments:
-                    self._resolve(item, "addressed", f"Noted; {outcome.command.name} came with it")
-                return outcome.command
+                issue=repo.issue_number, github_url=_release_url(repo.repo), release=("production", ask))
+            if outcome.decision:
+                d = outcome.decision
+                return Command(name="/ship" if d.approved else "/stop", argument=d.comment or f"Rejected by @{d.reviewer}")
             planner = await self._planner(Workspace(repo=repo.repo, branch=repo.base_branch))
             for item in outcome.comments:
                 await self._triage(planner, plan, item)
@@ -427,13 +443,13 @@ class IssueToProduction(AgentRun):
 
     async def _adjust_on_staging(self, repo: RunRepo, plan: Plan, comments: list[Feedback]) -> bool:
         """A coding agent changes what's on staging (the run's base branch), the tests run, and
-        staging redeploys. Returns whether it did, so the run asks for /ship again."""
+        staging redeploys. Returns whether it did, so the run asks for an approval again."""
         quoted = "\n".join(f"> **@{c.author}**: {c.text[:300]}" for c in comments)
         if self._staging_rounds >= MAX_STAGING_ROUNDS:
             await self._post(repo.issue_number, f"{quoted}\n\nThat's {MAX_STAGING_ROUNDS} adjustments on staging already. "
-                                                "Reply `/ship` or `/stop`, or open a new issue for more changes.")
+                                                "Approve or reject the production deployment on GitHub, or open a new issue for more changes.")
             for item in comments:
-                self._resolve(item, "addressed", "Too many adjustments; asked for /ship, /stop or a new issue")
+                self._resolve(item, "addressed", "Too many adjustments; asked for an approval or a new issue")
             return False
         self._staging_rounds += 1
         async with self._step("adjust"):
@@ -557,7 +573,7 @@ def _initial_steps() -> list[Step]:
         Step(key="clarify", label="Planner agent asks about anything unclear"),
         Step(key="gate:clarify", label="Developer answers on the issue"),
         Step(key="plan", label="Planner agent drafts a plan"),
-        Step(key="gate:plan", label="Someone replies /approve"),
+        Step(key="gate:plan", label="A reviewer approves the plan on GitHub"),
         Step(key="build", label="Coding agents build in parallel"),
         Step(key="pr", label="Integrate branches and open a PR"),
         Step(key="review", label="Review agent checks the PR"),
@@ -569,7 +585,7 @@ def _initial_steps() -> list[Step]:
         Step(key="feedback", label="Coding agent addresses PR comments"),
         Step(key="merge", label="Merge"),
         Step(key="staging", label="Deploy to staging and check it"),
-        Step(key="gate:production", label="Someone replies /ship"),
+        Step(key="gate:production", label="A reviewer approves production on GitHub"),
         Step(key="adjust", label="Coding agent adjusts what people saw on staging"),
         Step(key="canary", label=f"Canary at {CANARY_WEIGHT}%, then promote"),
         Step(key="rollback", label="Roll back if the canary fails"),
@@ -586,13 +602,18 @@ def _questions_comment(questions: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _plan_comment(plan: Plan, revision: int = 1) -> str:
+def _release_url(repo: str) -> str:
+    return f"https://github.com/{repo}/actions/workflows/release.yml"
+
+
+def _plan_comment(plan: Plan, revision: int = 1, repo: str = "") -> str:
     heading = "### 🗺️ Plan" + (f" (revision {revision})" if revision > 1 else "")
     lines = [heading, "", plan.summary, "", "**Acceptance criteria**"]
     lines += [f"- {c}" for c in plan.acceptance_criteria]
     lines += ["", "**Subtasks** (one coding agent each, in parallel)"]
     lines += [f"- **{s.title}** (`{s.id}`): {s.description}" for s in plan.subtasks]
-    lines += ["", "Reply `/approve` to start building, or reply with what to change."]
+    lines += ["", "A reviewer approves the plan on GitHub to start building: open the waiting **release** run in "
+                  f"[Actions]({_release_url(repo)}) and choose *Review deployments*. Or reply with what to change."]
     return "\n".join(lines)
 
 

@@ -247,10 +247,13 @@ class Gate(BaseModel):
     context: str = ""
     waiting_since: float
     questions: list[str] = Field(default_factory=list)  # the planner's, at the clarify gate
-    commands: list[str] = Field(default_factory=list)  # e.g. ["/approve"]; other comments are conversation
+    commands: list[str] = Field(default_factory=list)  # e.g. ["/continue"]; other comments are conversation
     # When the gate decides by itself if nobody speaks up (the auto-merge review window).
     closes_at: float | None = None
     github_url: str | None = None  # where to reply
+    # Set when a person decides this gate by approving a deployment on GitHub (an Environment with
+    # required reviewers), not by typing a command: which request this gate is waiting on.
+    approval_ask: int | None = None
 
 
 class Feedback(BaseModel):
@@ -337,6 +340,18 @@ class RunRequest(BaseModel):
     # A review or repaired PR keeps listening for comments this long after the last one.
     idle_close_hours: float = 24.0
     console_url: str | None = None  # linked from the commit status
+
+
+class ReleaseDecision(BaseModel):
+    """A reviewer's answer to a deployment waiting for approval on GitHub, delivered by the webhook.
+    ``ask`` numbers the run's requests for a gate, so a late answer to an old one is ignored."""
+
+    gate: Literal["plan", "merge", "production"]
+    ask: int
+    approved: bool
+    reviewer: str = ""
+    comment: str = ""
+    url: str = ""
 
 
 class Command(BaseModel):

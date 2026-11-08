@@ -78,7 +78,7 @@ export const CRITERIA: CriterionInfo[] = [
     title: "Humans stay accountable without babysitting",
     problem: "Approvals take hours. A script holding a process open for a reviewer is a process waiting to crash.",
     quote: { text: "A deploy agent might run free in staging but need approval in production, or run on its own at noon but check with a human at 3 a.m.", source: SOURCES.port },
-    beat: "The run waits for /approve and /ship on GitHub, for minutes or days, using no compute. The agent's required check holds each PR.",
+    beat: "The run waits for a reviewer to approve its deployments in GitHub's UI, for minutes or days, using no compute. GitHub decides who may; the agent's required check holds each PR.",
     temporal: "Durable waits answered by Signals from GitHub's webhooks",
   },
   {
