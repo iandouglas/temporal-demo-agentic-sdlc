@@ -224,7 +224,9 @@
 /* What a gate waits for on GitHub, and the coding agent's diagnosis of a broken upgrade. */
 .gate-reply { margin: 0; display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; font-size: .9rem; }
 .gate-reply code { font-family: var(--font-mono); color: var(--green); }
-.diagnosis { border: 1px solid var(--uv-light); background: rgba(68, 76, 231, .08); padding: .7rem .8rem; margin-bottom: .8rem; }
+.diagnosis { border: 1px solid var(--uv-light); background: rgba(68, 76, 231, .08); padding: .7rem .8rem; margin-bottom: .8rem;
+  /* Scrolls on its own and leaves the rest of the card to the agents; unbounded, it filled the whole card and pushed them out of view. */
+  flex: 0 1 auto; max-height: 40%; overflow: auto; }
 .diagnosis dl { margin: .4rem 0 0; display: grid; grid-template-columns: max-content 1fr; gap: .3rem .8rem; font-size: .85rem; }
 .diagnosis dt { color: var(--slate-300); font-family: var(--font-mono); font-size: .75rem; }
 .diagnosis dd { margin: 0; }
