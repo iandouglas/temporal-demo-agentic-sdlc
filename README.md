@@ -1,4 +1,4 @@
-> These updates are only for AWS re:Invent 2026. Do not merge this branch into the default branch.
+> These updates are only for AWS re:Invent 2026. This repository's main branch is the re:Invent demo version.
 > Contact Ian Douglas or Tomas Josovsky with questions.
 
 # Agentic SDLC on Temporal
