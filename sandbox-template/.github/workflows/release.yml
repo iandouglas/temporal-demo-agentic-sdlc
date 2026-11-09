@@ -8,7 +8,8 @@
 # demo finds which run an answer belongs to, so don't change its format.
 name: Release
 
-run-name: release ${{ inputs.gate }} ${{ inputs.subject }} #${{ inputs.ask }}
+# Quoted: an unquoted " #" starts a YAML comment and silently drops the ask number.
+run-name: "release ${{ inputs.gate }} ${{ inputs.subject }} #${{ inputs.ask }}"
 
 on:
   workflow_dispatch:

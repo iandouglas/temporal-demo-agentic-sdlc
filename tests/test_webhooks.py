@@ -503,3 +503,10 @@ async def _until_visible(temporal, ref: str, queue: str | None = None) -> None:
             return
         await asyncio.sleep(0.1)
     raise AssertionError(f"{ref} never became visible")
+
+
+def test_the_release_workflows_run_name_keeps_the_ask_number_the_webhook_matches_on():
+    import pathlib
+    import yaml
+    text = (pathlib.Path(__file__).parent.parent / "sandbox-template/.github/workflows/release.yml").read_text()
+    assert yaml.safe_load(text)["run-name"] == "release ${{ inputs.gate }} ${{ inputs.subject }} #${{ inputs.ask }}"
