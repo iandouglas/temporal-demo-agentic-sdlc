@@ -2,7 +2,7 @@
 # supervised, production) it dispatches this workflow, and the job for that gate waits on a
 # GitHub Environment with required reviewers. A reviewer approves or rejects the deployment in
 # GitHub's UI ("Review deployments" on this run); only the people listed on the Environment can.
-# The demo hears the answer through the repository webhook (deployment_review) and carries on.
+# The demo hears the answer through the repository webhook (workflow_run) and carries on.
 #
 # The jobs do nothing once approved. The approval is the point, and the run's name is how the
 # demo finds which run an answer belongs to, so don't change its format.

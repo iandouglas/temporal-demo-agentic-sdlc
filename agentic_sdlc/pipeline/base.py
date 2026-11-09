@@ -270,7 +270,7 @@ class AgentRun:
         if outcome.decision:
             d = outcome.decision
             self._mark(f"gate:{key}", "completed",
-                       note=f"{'Approved' if d.approved else 'Rejected'} by @{d.reviewer or 'a reviewer'} on GitHub after {_duration(waited)}")
+                       note=f"{'Approved' if d.approved else 'Rejected'} by {'@' + d.reviewer if d.reviewer else 'a reviewer'} on GitHub after {_duration(waited)}")
             self._prove("D2", f"{key.capitalize()} gate: waited {_duration(waited)} for a GitHub reviewer to approve the "
                               "deployment, using no compute")
         elif outcome.command:

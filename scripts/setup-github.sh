@@ -33,7 +33,7 @@ REGION=${AWS_REGION:-us-west-1}
 RUNTIME_SECRET=tmprl-dem-cld/agentic-sdlc/runtime
 CHECK=agentic-sdlc/agent-review
 SAMPLE_BRANCH=samples/discount-rounding
-EVENTS='["issues","issue_comment","pull_request","pull_request_review","pull_request_review_comment","deployment_review","workflow_run"]'
+EVENTS='["issues","issue_comment","pull_request","pull_request_review","pull_request_review_comment","workflow_run"]'
 
 WEBHOOK_URL=""
 REVIEWERS=""

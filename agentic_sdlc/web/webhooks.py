@@ -19,8 +19,9 @@ run checks everyone else's access with GitHub before acting on what they said.
 
 Approvals: the run asks a reviewer to approve a deployment of the storefront's release workflow
 (a GitHub Environment with required reviewers). The run is named ``release <gate> <issue:N|pr:N>
-#<ask>``, and ``deployment_review`` (approved or rejected) or a cancelled ``workflow_run`` carries
-that name back as a ``release_decision`` Signal. Who may approve is GitHub's decision alone.
+#<ask>``, and the ``workflow_run`` completing (success is an approval, failure a rejection, cancelled
+an expiry) carries that name back as a ``release_decision`` Signal. Repository webhooks can't receive
+``deployment_review``. Who may approve is GitHub's decision alone.
 
 ``route`` turns a delivery into Actions: start a run, Signal the runs watching an issue or PR, or
 nothing. ``handle`` carries them out against Temporal.
@@ -184,8 +185,8 @@ def route(event: str, payload: dict) -> list[Action]:
         number = payload["pull_request"]["number"]
         return [SignalRuns(f"pr:{number}", "pull_request_closed", number)]
 
-    if event in ("deployment_review", "workflow_run"):
-        return _release_decision(event, payload)
+    if event == "workflow_run":
+        return _release_decision(payload)
 
     comment = _comment(event, payload)
     if comment is None:
@@ -194,25 +195,22 @@ def route(event: str, payload: dict) -> list[Action]:
     return [SignalRuns(ref, "github_comment", comment)]
 
 
-def _release_decision(event: str, payload: dict) -> list[Action]:
-    """A reviewer's answer to a release run's deployment, as a Signal to the run that asked."""
+def _release_decision(payload: dict) -> list[Action]:
+    """How a release run ended, as a Signal to the run that asked. The run's job only starts once a
+    reviewer approves, so success means approved; a rejection fails it, and a cancel or expiry
+    cancels it."""
     run = payload.get("workflow_run") or {}
     match = RELEASE_RUN.match(run.get("display_title") or "")
-    if not match:
-        return []  # some other workflow's deployment
+    if payload.get("action") != "completed" or not match:
+        return []  # still waiting, or some other workflow
     gate, subject, ask = match.group(1), match.group(2), int(match.group(3))
-    action, url = payload.get("action"), run.get("html_url", "")
-    if event == "deployment_review" and action in ("approved", "rejected"):
-        reviewer = (payload.get("approver") or payload.get("sender") or {}).get("login", "")
-        decision = ReleaseDecision(gate=gate, ask=ask, approved=action == "approved", reviewer=reviewer,
-                                   comment=(payload.get("comment") or "")[:500], url=url)
-    elif event == "workflow_run" and action == "completed" and run.get("conclusion") == "cancelled":
-        # Cancelled or expired while waiting. (A rejection also ends the run, as a failure, but its
-        # deployment_review has already said so.)
-        decision = ReleaseDecision(gate=gate, ask=ask, approved=False, reviewer="GitHub",
-                                   comment="The approval request was cancelled or expired.", url=url)
-    else:
+    conclusion = run.get("conclusion")
+    if conclusion not in ("success", "failure", "cancelled"):
         return []
+    comment = {"success": "", "failure": "A reviewer rejected the deployment.",
+               "cancelled": "The approval request was cancelled or expired."}[conclusion]
+    decision = ReleaseDecision(gate=gate, ask=ask, approved=conclusion == "success", reviewer="",
+                               comment=comment, url=run.get("html_url", ""))
     return [SignalRuns(subject, "release_decision", decision)]
 
 
