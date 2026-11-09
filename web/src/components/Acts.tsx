@@ -5,9 +5,7 @@ import { ago, api, money, temporalLink, type Config, type RunSummary, type Overv
 import { useState } from "react";
 import { usePoll } from "../live";
 import { CRITERIA, LIFECYCLE, RECAP, STATS } from "../story";
-import { Scorecard, type Evidence } from "./Scorecard";
 import { StorefrontPanel } from "./Panels";
-import type { Criterion } from "../api";
 
 export function ResultAct({ session, config, onOpenRun, onStart }: { session: Overview; config: Config; onOpenRun: (id: string) => void; onStart: () => void }) {
   const shipped = session.runs.find((r) => r.kind === "issue" && r.status === "completed");
@@ -169,15 +167,13 @@ export function ChangeAct({ session, onError }: { session: Overview; config: Con
   );
 }
 
-export function ProofAct({ evidence, config }: { evidence: Map<Criterion, Evidence>; config: Config }) {
+export function ProofAct() {
   return (
     <div className="act act-proof">
       <div className="proof-copy">
         <h1 className="display">What you saw, and where to check it.</h1>
         <ol className="recap">{RECAP.map((line) => <li key={line}>{line}</li>)}</ol>
-        <p className="lede">Each tick links to the Workflow whose Event History shows it.</p>
       </div>
-      <Scorecard evidence={evidence} temporalUi={config.temporal_ui} large />
     </div>
   );
 }

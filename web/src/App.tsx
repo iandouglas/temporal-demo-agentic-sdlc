@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type Config, type Overview } from "./api";
 import { usePoll, useRunStream } from "./live";
 import { ACTS, type ActKey } from "./story";
@@ -6,7 +6,6 @@ import { ChangeAct, HardAct, ProofAct, ResultAct, WhyAct } from "./components/Ac
 import { ScenarioDialog } from "./components/ScenarioDialog";
 import { RunConsole } from "./components/RunConsole";
 import { BreakThings } from "./components/BreakThings";
-import { Scorecard, collectEvidence } from "./components/Scorecard";
 import logo from "./kit/brand/temporal-logo.svg";
 
 const RUN_KIND: Record<string, string> = { issue: "Issue", dependency: "Bump", review: "Review" };
@@ -76,7 +75,6 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const evidence = useMemo(() => collectEvidence(session?.runs ?? []), [session]);
   const fail = (message: string) => setToast(message);
   const control = (path: string, body?: unknown) =>
     api(path, { method: "POST", json: body }).then(refresh).catch((e: Error) => fail(e.message));
@@ -112,14 +110,13 @@ export function App() {
         </div>
       </header>
 
-      <div className={`body ${act === "proof" ? "no-rail" : ""}`}>
-        {act !== "proof" && <Scorecard evidence={evidence} temporalUi={config.temporal_ui} />}
+      <div className="body no-rail">
         <main className="stage">
           {act === "result" && <ResultAct session={session} config={config} onOpenRun={(id) => { setRunId(id); setAct("live"); }} onStart={() => setDialog(true)} />}
           {act === "why" && <WhyAct />}
           {act === "hard" && <HardAct />}
           {act === "change" && <ChangeAct session={session} config={config} onError={fail} />}
-          {act === "proof" && <ProofAct evidence={evidence} config={config} />}
+          {act === "proof" && <ProofAct />}
           {act === "live" && (view ? <RunConsole view={view} feeds={feeds} config={config} onError={fail} /> : (
             <div className="empty-stage">
               <h1 className="display">The agents work on GitHub. This is the view from inside.</h1>
